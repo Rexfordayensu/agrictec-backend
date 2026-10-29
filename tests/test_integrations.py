@@ -408,6 +408,12 @@ def test_production_needs_the_owners_admin_sign_in():
         Settings(trusted_proxies="127.0.0.1,web")
 
 
+def test_uptime_monitors_can_check_health_with_head(client):
+    assert client.get(f"{API}/health").json()["status"] == "ok"
+    head = client.head(f"{API}/health")
+    assert head.status_code == 200 and head.content == b""
+
+
 def test_workers_starting_together_bootstrap_once():
     from sqlalchemy import func, select, text
 

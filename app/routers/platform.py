@@ -30,7 +30,8 @@ router = APIRouter(tags=["Platform"])
 Database = Annotated[DB, Depends(get_db)]
 
 
-@router.get("/health", tags=["System"])
+# HEAD too: uptime monitors (UptimeRobot) check with HEAD by default.
+@router.api_route("/health", methods=["GET", "HEAD"], tags=["System"])
 def health(db: Database):
     db.execute(text("select 1"))
     return {"status": "ok", "time": iso(now_utc())}
