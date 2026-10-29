@@ -12,8 +12,16 @@ from app.domain.clock import now_utc
 from app.models import Admin, Profile, User
 from app.routers.common import YEAR, clear_farmer_cookies, set_farmer_cookies
 from app.schemas.base import CamelModel, Message
-from app.schemas.farm import Credentials, ReplaceTemporaryPassword, Session, SignedIn, SignUp
-from app.services import admin_farmers, auth
+from app.schemas.farm import (
+    Credentials,
+    PasswordResetConfirm,
+    PasswordResetRequest,
+    ReplaceTemporaryPassword,
+    Session,
+    SignedIn,
+    SignUp,
+)
+from app.services import admin_farmers, auth, password_reset
 
 router = APIRouter(prefix="/auth", tags=["Farmer auth"])
 
@@ -45,6 +53,21 @@ def sign_in(body: Credentials, response: Response, db: DB = Depends(get_db)):
 @router.post("/replace-temporary-password", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
 def replace_temporary_password(body: ReplaceTemporaryPassword, response: Response, db: DB = Depends(get_db)):
     token, session = auth.replace_temporary_password(db, body.email, body.temporary_password, body.new_password)
+    return _signed_in(db, response, token, session)
+
+
+@router.post("/password-reset/request", response_model=Message, dependencies=[Depends(rate_limit("reset-request", 5, 3600))])
+def request_password_reset(body: PasswordResetRequest, db: DB = Depends(get_db)):
+    """Sends a six-digit code to the account's email (and verified phone). The answer is the same
+    whether or not the email has an account."""
+    password_reset.request_reset(db, body.email)
+    return Message(detail="If an account uses this email, a reset code is on its way. It expires in 15 minutes.")
+
+
+@router.post("/password-reset/confirm", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
+def confirm_password_reset(body: PasswordResetConfirm, response: Response, db: DB = Depends(get_db)):
+    """The code and a new password: every other session ends, and this one starts."""
+    token, session = password_reset.confirm_reset(db, body.email, body.code, body.new_password)
     return _signed_in(db, response, token, session)
 
 

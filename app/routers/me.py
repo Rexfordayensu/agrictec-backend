@@ -285,8 +285,8 @@ def scan_crop(
     crop: Annotated[str | None, Form()] = None,
 ):
     """Spends 5 AI credits, only when a diagnosis is produced. Save it with POST /me/diagnoses."""
-    size = len(image.file.read(MAX_IMAGE_BYTES + 1))
-    return tools.scan_crop(db, ctx.user.id, image.filename or "photo", image.content_type, size, crop)
+    content = image.file.read(MAX_IMAGE_BYTES + 1)
+    return tools.scan_crop(db, ctx.user.id, image.filename or "photo", image.content_type, content, crop)
 
 
 @router.post("/yield", response_model=f.YieldResult)

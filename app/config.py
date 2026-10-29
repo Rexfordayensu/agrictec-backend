@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     smile_id_partner_id: str | None = None
     smile_id_api_key: str | None = None
     smile_id_sandbox: bool = True
+    # Claude (https://platform.claude.com): the assistant's answers and the crop doctor's reading
+    # of a photo. Without a key, the assistant answers from the admin's knowledge base and the
+    # crop doctor gives its demonstration results.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-opus-5-5"
 
     @property
     def payments_live(self) -> bool:
@@ -79,6 +84,10 @@ class Settings(BaseSettings):
     @property
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from)
+
+    @property
+    def ai_enabled(self) -> bool:
+        return bool(self.anthropic_api_key)
 
     @property
     def identity_checks_enabled(self) -> bool:
@@ -102,6 +111,7 @@ class Settings(BaseSettings):
         "smtp_from",
         "smile_id_partner_id",
         "smile_id_api_key",
+        "anthropic_api_key",
         mode="before",
     )
     @classmethod

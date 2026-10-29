@@ -52,7 +52,8 @@ def send_sms(phone: str, text: str, client: httpx.Client | None = None) -> None:
         raise MessageFailed(str(body.get("message") or f"gateway answered {response.status_code}")[:150])
 
 
-def send_email(to: str, subject: str, text: str) -> None:
+def send_email(to: str, subject: str, text: str, attachments: list[tuple[str, str, bytes]] | None = None) -> None:
+    """`attachments`: (filename, "type/subtype", content) each."""
     settings = get_settings()
     if not (settings.smtp_host and settings.smtp_from):
         raise MessageFailed("email is not configured")
@@ -63,6 +64,9 @@ def send_email(to: str, subject: str, text: str) -> None:
     message["To"] = to
     message["Subject"] = subject
     message.set_content(text)
+    for filename, mime, content in attachments or []:
+        maintype, subtype = mime.split("/", 1)
+        message.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
     try:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=TIMEOUT_SECONDS) as smtp:
             if settings.smtp_starttls:

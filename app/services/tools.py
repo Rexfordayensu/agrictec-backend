@@ -1,22 +1,36 @@
 """The farmer's AI tools: the assistant, the crop doctor and the yield predictor. Each checks the
 feature flag and the plan, and the AI ones spend credits only when they succeed."""
 
+import re
+from typing import get_args
+
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
 from app.core.errors import AppError
-from app.domain.assistant import AssistantContext, match_knowledge, resolve_reply
-from app.domain.credit import calculate_credit_score
+from app.domain.assistant import AssistantContext, lock_loans, match_knowledge, resolve_reply
+from app.domain.constants import Crop
+from app.domain.credit import calculate_credit_score, score_label
 from app.domain.defaults import ASSISTANT_FALLBACK_ID
 from app.domain.diagnosis import IMAGE_TYPES, MAX_IMAGE_BYTES, diagnose
 from app.domain.farming import predict_yield
 from app.domain.finance import total_expenses, total_income
-from app.domain.market import published_prices
+from app.domain.market import published_prices, unit_label
+from app.integrations import claude
 from app.integrations import weather as weather_api
 from app.schemas import farm as f
-from app.services import platform_store, subscriptions
+from app.schemas.platform import AssistantReply, MarketPrice
+from app.services import farm, platform_store, subscriptions
 from app.services.farmer_data import load_farmer
 
 WEATHER_TOKENS = ("{weather}", "{rainAdvice}", "{fieldWorkAdvice}")
+# With Claude answering, questions like these also get today's weather in the farmer's data.
+WEATHER_WORDS = re.compile(
+    r"\b(weather|rain\w*|storm|wind\w*|dry|spray\w*|plant\w*|sow\w*|harvest\w*|today|tomorrow)\b", re.I
+)
+# Earlier messages Claude sees, so follow-up questions make sense.
+CHAT_TURNS = 10
+CROPS = {c.lower(): c for c in get_args(Crop)}
 
 
 def farm_weather(profile, need: bool) -> dict | None:
@@ -55,37 +69,114 @@ def assistant_context(db: DB, user_id: str, *, with_weather: bool = False) -> As
     )
 
 
+def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
+    """What Claude is told about the farmer: summary figures, never individual records."""
+    lines = [
+        f"- Name: {ctx.farmer_name or 'not given'}; region: {ctx.region or 'not given'}",
+        f"- Main crops: {', '.join(ctx.primary_crops) or 'not given'}",
+        f"- Credit score: {ctx.score} ({score_label(ctx.score, ctx.bands)})",
+        f"- Farm records: {ctx.record_count}; total income GHS {ctx.income:,.2f}, total expenses "
+        f"GHS {ctx.expenses:,.2f}, profit GHS {ctx.income - ctx.expenses:,.2f}",
+        f"- Ghana Card: {ctx.ghana_card or 'not submitted'}",
+    ]
+    if ctx.credit_factors:
+        c = ctx.credit_factors
+        lines.append(
+            f"- Score factors (0-100): payment history {c.payment_history}, record completeness "
+            f"{c.record_completeness}, income stability {c.income_stability}, mobile money "
+            f"{c.momo_activity}, verification {c.verification}"
+        )
+    if ctx.weather:
+        w = ctx.weather
+        lines.append(
+            f"- Weather at the farm now: {w.get('description')}, {w.get('temp')}°C, humidity "
+            f"{w.get('humidity')}%, rain chance {w.get('rainChance')}%, wind {w.get('windKph')} km/h"
+            + ("; a storm is forecast" if w.get("storm") else "")
+        )
+    own = {c.lower() for c in ctx.primary_crops}
+    relevant = [p for p in prices if p.crop.lower() in own] or prices
+    for p in relevant[:8]:
+        where = p.market or p.region or "Ghana"
+        lines.append(f"- Published price: {p.crop}, GHS {p.price:,.2f} per {unit_label(p)} ({where})")
+    return "\n".join(lines)
+
+
+def _recent_turns(db: DB, user_id: str) -> list[tuple[str, object]]:
+    turns = farm.list_chat(db, user_id)[-CHAT_TURNS:]
+    return [
+        (t.role, t.content if isinstance(t.content, str) else t.content.model_dump(exclude_none=True))
+        for t in turns
+    ]
+
+
 def ask_assistant(db: DB, user_id: str, message: str) -> f.AssistantAnswer:
+    """Claude's answer when configured, else (or when Claude can't answer) the knowledge base's."""
     hold = subscriptions.reserve(db, user_id, "aiAssistant")
     try:
+        ai = get_settings().ai_enabled
         knowledge = platform_store.assistant_kb(db)
-        # Weather is fetched only when the reply that answers will show it.
+        # Weather is fetched only when the answer may use it.
         item = match_knowledge(message, knowledge) or next(
             (k for k in knowledge if k.id == ASSISTANT_FALLBACK_ID), None
         )
         reply_text = str(item.reply.model_dump()) if item else ""
-        _, reply = resolve_reply(
-            message,
-            assistant_context(db, user_id, with_weather=any(t in reply_text for t in WEATHER_TOKENS)),
-            knowledge,
-            platform_store.crops(db),
-            published_prices(platform_store.market_prices(db)),
-        )
+        need_weather = any(t in reply_text for t in WEATHER_TOKENS) or bool(ai and WEATHER_WORDS.search(message))
+        ctx = assistant_context(db, user_id, with_weather=need_weather)
+        prices = published_prices(platform_store.market_prices(db))
+        matched, reply = resolve_reply(message, ctx, knowledge, platform_store.crops(db), prices)
+        source = "rules"
+        if ai:
+            try:
+                answer = claude.assistant_reply(
+                    farmer_facts=farmer_facts(ctx, prices),
+                    prepared=reply.model_dump(exclude_none=True) if matched else None,
+                    turns=_recent_turns(db, user_id),
+                    message=message,
+                )
+                reply, source = lock_loans(AssistantReply(**answer), ctx), "ai"
+            except claude.AIUnavailable:
+                pass  # The knowledge base's reply stands.
     except Exception:
         subscriptions.settle(db, hold, success=False)
         raise
     snap = subscriptions.settle(db, hold, success=True)
-    return f.AssistantAnswer(reply=reply, credits_remaining=snap.credits_remaining)
+    return f.AssistantAnswer(reply=reply, credits_remaining=snap.credits_remaining, source=source)
 
 
-def scan_crop(db: DB, user_id: str, filename: str, content_type: str | None, size: int, crop: str | None) -> f.DiagnosisAnswer:
+def scan_crop(db: DB, user_id: str, filename: str, content_type: str | None, content: bytes, crop: str | None) -> f.DiagnosisAnswer:
+    """Claude reads the photo when configured; otherwise the demonstration results. Credits are
+    spent only when a diagnosis is produced."""
     if content_type not in IMAGE_TYPES:
         raise AppError("Upload a photo (JPEG, PNG, WebP or HEIC).")
-    if size > MAX_IMAGE_BYTES:
+    if len(content) > MAX_IMAGE_BYTES:
         raise AppError("The photo is larger than 10 MB. Choose a smaller one.")
+    photo = None
+    if get_settings().ai_enabled:
+        try:
+            photo = claude.prepare_photo(content, content_type)
+        except ValueError as error:
+            raise AppError(str(error)) from error
     hold = subscriptions.reserve(db, user_id, "cropDoctor")
     try:
-        result = diagnose(filename, size, platform_store.diagnoses(db), crop)
+        if photo:
+            found = claude.diagnose_photo(photo, crop)
+            # Saved diagnoses take the app's crop names only.
+            found["crop"] = crop if crop in CROPS.values() else CROPS.get((found["crop"] or "").lower())
+            result = f.DiagnosisResultOut(**found, source="ai")
+        else:
+            result = diagnose(filename, len(content), platform_store.diagnoses(db), crop).model_copy(
+                update={"source": "demo"}
+            )
+    except claude.NotACropPhoto as error:
+        subscriptions.settle(db, hold, success=False)
+        raise AppError(f"{error} Take a closer photo of the affected leaves or fruit.") from error
+    except claude.AIUnavailable as error:
+        subscriptions.settle(db, hold, success=False)
+        raise AppError(
+            "The crop doctor couldn't look at the photo just now. Try again in a moment; no credits were used.",
+            code="ai_unavailable",
+            status_code=503,
+        ) from error
     except ValueError as error:
         subscriptions.settle(db, hold, success=False)
         raise AppError(str(error)) from error

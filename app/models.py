@@ -164,6 +164,7 @@ class Diagnosis(Base):
     crop: Mapped[str | None] = mapped_column(String(40))
     image_thumb: Mapped[str | None] = mapped_column(Text)
     date: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(8))
     created_at: Mapped[datetime] = created_column()
 
 
@@ -290,6 +291,26 @@ class Notification(Base):
     __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
 
 
+class PasswordReset(Base):
+    """A one-time code a farmer asked for to choose a new password. Only a keyed hash of the
+    code is kept; it expires, allows a few attempts, and a newer request replaces it."""
+
+    __tablename__ = "password_resets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = created_column()
+    expires_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Set when the code is used, or replaced by a newer one.
+    used_at: Mapped[datetime | None] = mapped_column(Timestamp)
+
+    __table_args__ = (Index("ix_password_resets_user_created", "user_id", "created_at"),)
+
+
 class CreditReservation(Base):
     """AI credits held for one assistant question or crop scan.
 
@@ -374,6 +395,27 @@ class LoginLockout(Base):
     key: Mapped[str] = mapped_column(String(254), primary_key=True)
     failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(Timestamp)
+
+
+class ReportSchedule(Base):
+    """A console report emailed every week or month, with its CSV attached."""
+
+    __tablename__ = "report_schedules"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    report_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    # "weekly" (Mondays) or "monthly" (the 1st), at 07:00 Ghana time.
+    frequency: Mapped[str] = mapped_column(String(10), nullable=False)
+    recipients: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("admins.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = created_column()
+    next_run_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    # "sent to 3", or "failed: <reason>".
+    last_status: Mapped[str | None] = mapped_column(String(200))
+
+    __table_args__ = (Index("ix_report_schedules_due", "active", "next_run_at"),)
 
 
 class RateLimit(Base):

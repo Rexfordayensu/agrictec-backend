@@ -55,6 +55,8 @@ def snapshot(db: Database):
         "announcements": account.live_announcements(db),
         # "paystack": real payments; "demo": simulated (development only).
         "payments": {"mode": "paystack" if get_settings().payments_live else "demo"},
+        # "claude" when the assistant and crop doctor use Claude, "off" for the built-in rules.
+        "ai": {"mode": "claude" if get_settings().ai_enabled else "off"},
     }
 
 

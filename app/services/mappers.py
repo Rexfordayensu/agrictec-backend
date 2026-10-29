@@ -83,6 +83,7 @@ def diagnosis_out(row: m.Diagnosis) -> f.Diagnosis:
         crop=row.crop,
         image_thumb=row.image_thumb,
         date=row.date,
+        source=row.source,
     )
 
 

@@ -229,7 +229,9 @@ def render(reply: AssistantReply, values: dict[str, str | list[str]]) -> Assista
     )
 
 
-def _lock_loans(reply: AssistantReply, ctx: AssistantContext) -> AssistantReply:
+def lock_loans(reply: AssistantReply, ctx: AssistantContext) -> AssistantReply:
+    """A reply about loans, for a farmer whose Ghana Card isn't verified, ends with how to
+    unlock them."""
     if not ctx.ghana_card or ctx.ghana_card == "verified":
         return reply
     text = " ".join(filter(None, [reply.title, reply.intro, *(reply.bullets or []), reply.tip]))
@@ -248,4 +250,4 @@ def resolve_reply(
     fallback = next((k.reply for k in knowledge if k.id == ASSISTANT_FALLBACK_ID), _FALLBACK)
     template = item.reply if item else fallback
     values = _placeholder_values(_tokens_in(template), ctx, crops, prices)
-    return item, _lock_loans(render(template, values), ctx)
+    return item, lock_loans(render(template, values), ctx)

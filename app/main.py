@@ -17,6 +17,7 @@ from app.core.events import bus
 from app.core.sessions import IMPERSONATION_HEADER
 from app.db import SessionLocal
 from app.routers import admin_auth, admin_lending, admin_people, admin_platform, auth, me, platform
+from app.services import report_schedules
 from app.services.backup import bootstrap
 
 
@@ -35,7 +36,9 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         bootstrap(db, seed_demo_data=get_settings().seed_demo_data)
     bus.start(asyncio.get_running_loop())
+    report_schedules.scheduler.start()
     yield
+    report_schedules.scheduler.stop()
     bus.stop()
 
 

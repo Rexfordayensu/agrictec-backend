@@ -57,6 +57,16 @@ class ReplaceTemporaryPassword(CamelModel):
     new_password: Annotated[str, Field(max_length=200)]
 
 
+class PasswordResetRequest(CamelModel):
+    email: Annotated[str, Field(min_length=3, max_length=254)]
+
+
+class PasswordResetConfirm(CamelModel):
+    email: Annotated[str, Field(min_length=3, max_length=254)]
+    code: Annotated[str, Field(min_length=6, max_length=12)]
+    new_password: Annotated[str, Field(max_length=200)]
+
+
 # ---------- Profile ----------
 
 
@@ -251,6 +261,9 @@ class MomoTransaction(MomoInput):
     created_at: Timestamp
 
 
+DiagnosisSource = Literal["ai", "demo"]
+
+
 class DiagnosisInput(CamelModel):
     disease: Text(80)
     severity: Severity
@@ -260,6 +273,8 @@ class DiagnosisInput(CamelModel):
     crop: Crop | None = None
     image_thumb: Annotated[str | None, Field(max_length=200_000)] = None
     date: Timestamp
+    # "ai" when Claude read the photo, "demo" for the demonstration results (older: unknown).
+    source: DiagnosisSource | None = None
 
 
 class Diagnosis(DiagnosisInput):
@@ -442,6 +457,8 @@ class AssistantQuestion(CamelModel):
 class AssistantAnswer(CamelModel):
     reply: AssistantReply
     credits_remaining: int | None
+    # "ai" when Claude wrote the reply, "rules" for the admin's knowledge base.
+    source: Literal["ai", "rules"] = "rules"
 
 
 class DiagnosisResultOut(CamelModel):
@@ -451,6 +468,7 @@ class DiagnosisResultOut(CamelModel):
     treatment: str
     prevention: list[str] | None = None
     crop: str | None = None
+    source: DiagnosisSource | None = None
 
 
 class DiagnosisAnswer(CamelModel):

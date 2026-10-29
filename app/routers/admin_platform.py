@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import Field
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
 from app.core.deps import AdminContext, require
 from app.db import get_db
 from app.domain.announcements import in_audience
@@ -29,7 +30,7 @@ from app.schemas.platform import (
     Plan,
     Weather,
 )
-from app.services import admin_config, announcements, audit_log, backup, insights, platform_store
+from app.services import admin_config, announcements, audit_log, backup, insights, platform_store, report_schedules
 from app.services.farmer_data import load_farmers
 
 router = APIRouter(prefix="/admin")
@@ -238,6 +239,43 @@ def export_audit(body: a.AuditExport, ctx: allowed("audit.view"), db: Database):
 @router.get("/reports", tags=["Admin reports"])
 def report_catalog(ctx: allowed("reports.export")):
     return {"reports": insights.catalog(), "datasets": datasets_meta()}
+
+
+class ScheduleInput(CamelModel):
+    report_id: Annotated[str, Field(max_length=40)]
+    frequency: Literal["weekly", "monthly"]
+    recipients: Annotated[list[Annotated[str, Field(max_length=254)]], Field(max_length=10)]
+
+
+class SchedulePatch(CamelModel):
+    frequency: Literal["weekly", "monthly"] | None = None
+    recipients: Annotated[list[Annotated[str, Field(max_length=254)]], Field(max_length=10)] | None = None
+    active: bool | None = None
+
+
+# Before /reports/{report_id}, which would otherwise take "schedules" for a report ID.
+@router.get("/reports/schedules", tags=["Admin reports"])
+def list_report_schedules(ctx: allowed("reports.export"), db: Database):
+    """Reports emailed every Monday or every 1st of the month at 07:00 Ghana time, with whether
+    email is set up on the server (without it nothing can be sent)."""
+    return {"schedules": report_schedules.list_schedules(db), "emailEnabled": get_settings().email_enabled}
+
+
+@router.post("/reports/schedules", status_code=201, tags=["Admin reports"])
+def create_report_schedule(body: ScheduleInput, ctx: allowed("reports.export"), db: Database):
+    return report_schedules.create(db, ctx.admin, body.report_id, body.frequency, body.recipients)
+
+
+@router.patch("/reports/schedules/{schedule_id}", tags=["Admin reports"])
+def update_report_schedule(schedule_id: str, body: SchedulePatch, ctx: allowed("reports.export"), db: Database):
+    return report_schedules.update(
+        db, ctx.admin, schedule_id, frequency=body.frequency, recipients=body.recipients, active=body.active
+    )
+
+
+@router.delete("/reports/schedules/{schedule_id}", status_code=204, tags=["Admin reports"])
+def delete_report_schedule(schedule_id: str, ctx: allowed("reports.export"), db: Database):
+    report_schedules.delete(db, ctx.admin, schedule_id)
 
 
 @router.get("/reports/{report_id}", response_model=a.AdminReport, tags=["Admin reports"])

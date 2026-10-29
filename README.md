@@ -53,7 +53,7 @@ set TEST_DATABASE_URL=postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:543
 python -m pytest
 ```
 
-There are 64 tests. Each one runs against a database built by the real migrations and emptied
+There are 78 tests. Each one runs against a database built by the real migrations and emptied
 before every test. Outside services are replaced with recorded responses, so the tests never
 need the network. **The test database is wiped, so never point it at real data.**
 
@@ -116,7 +116,7 @@ can see them for its redirects. To serve the API on another origin instead, set
 
 | Frontend service                                         | API                                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------- |
-| `auth.service`                                           | `POST /auth/signup`, `/auth/login`, `/auth/guest`, `/auth/logout`, `/auth/replace-temporary-password`, `GET /auth/session` |
+| `auth.service`                                           | `POST /auth/signup`, `/auth/login`, `/auth/guest`, `/auth/logout`, `/auth/replace-temporary-password`, `/auth/password-reset/request`, `/auth/password-reset/confirm`, `GET /auth/session` |
 | `profile.service`, `onboarding.service`                  | `GET/PUT /me/profile`, `GET/PUT/DELETE /me/onboarding/draft`, `POST /me/onboarding/complete` |
 | `records.service`, `momo.service`                        | `GET/POST/PUT /me/records`, `PATCH/DELETE /me/records/{id}`. The same under `/me/momo` |
 | `diagnoses.service`, `chat.service`, `settings.service`  | `/me/diagnoses`, `/me/chat`, `/me/settings`                         |
@@ -140,7 +140,7 @@ can see them for its redirects. To serve the API on another origin instead, set
 | `risk.service`                                           | `POST /admin/risk/scan`, `GET /admin/risk/flags`, `/{id}/related`, `POST /{id}/dismiss`, `/{id}/confirm`, `GET /admin/risk/rules` |
 | `team.service`                                           | `GET/POST /admin/team`, `POST /{id}/role`, `/disable`, `/enable`, `/reset-password`, `GET /admin/roles` |
 | `audit.service`                                          | `GET /admin/audit` (filters + paging), `/audit/actors`, `POST /audit/export` |
-| `reports.service`                                        | `GET /admin/reports`, `/admin/reports/{id}`, `POST /{id}/export?format=csv\|pdf`, `/builder/preview`, `/builder/export` |
+| `reports.service`                                        | `GET /admin/reports`, `/admin/reports/{id}`, `POST /{id}/export?format=csv\|pdf`, `/builder/preview`, `/builder/export`; schedules: `GET/POST /admin/reports/schedules`, `PATCH/DELETE /schedules/{id}` |
 | `backup.service`, system status                          | `POST /admin/system/backup`, `/backup/summary`, `/restore`, `/reset-demo`, `/delete-farmers`, `GET /admin/system/status` |
 | market research (admin)                                  | `POST /admin/content/market/research`                               |
 | Paystack (server to server)                              | `POST /payments/paystack/webhook` (signature checked)               |
@@ -161,6 +161,14 @@ can see them for its redirects. To serve the API on another origin instead, set
   - Five failed admin sign-ins lock that email for five minutes.
   - Temporary passwords are one-time. A farmer or admin must replace theirs before doing
     anything else, and they never appear in the audit log.
+  - Farmers who forget their password get a six-digit code by email (and SMS to a verified
+    phone). The request's answer never says whether the email has an account. Codes:
+    - are stored only as a keyed hash
+    - expire after 15 minutes and allow five attempts
+    - are limited to five per account a day
+
+    Using one ends every other session and leaves a notice in the inbox. Without email or
+    SMS configured, a development server logs the code instead.
 - **Roles.** Every admin route checks a permission from the spec's matrix (`app/domain/permissions.py`).
   The account is re-read on every request, so a role change or a disabled account applies at
   once. Nobody can change their own access, and the last active Super Admin can't be demoted or
@@ -217,6 +225,7 @@ can see them for its redirects. To serve the API on another origin instead, set
 | [Arkesel](https://arkesel.com) | An SMS copy of each notification to the farmer's phone. | `ARKESEL_API_KEY` and an approved `SMS_SENDER_ID` |
 | SMTP | An email copy of each notification, for farmers with an email address. | `SMTP_HOST`, `SMTP_FROM` (and a username/password if the server needs one) |
 | [Smile ID](https://usesmileid.com) | Checks a submitted Ghana Card number and name against the NIA register. | `SMILE_ID_PARTNER_ID`, `SMILE_ID_API_KEY`; `SMILE_ID_SANDBOX=false` for live checks |
+| [Claude](https://platform.claude.com) (Anthropic) | The assistant's answers, written from the farmer's own figures, and the crop doctor's reading of a photo. | `ANTHROPIC_API_KEY`; `ANTHROPIC_MODEL` (default `claude-opus-5-5`) |
 
 Keep these points in mind:
 
@@ -235,5 +244,26 @@ Keep these points in mind:
   better source behind `app/integrations/market_prices.py`, such as MoFA/SRID or Esoko.
 - **When a service is unreachable,** weather and research answer `unavailable` and the app
   says so; nothing is invented.
+- **Claude.**
+  - **The assistant.** Claude gets the farmer's summary figures: score, record totals, Ghana Card
+    status, weather when the question needs it, and published prices for their crops. It also
+    gets their last ten chat messages, and the knowledge base's answer when one matches, so the
+    admin's content still guides it.
+  - **The crop doctor.** It sends only the photo, scaled down and re-encoded as JPEG (HEIC has to
+    be converted on the phone first). A photo with no plant, or a failed request, costs no
+    credits.
+  - **Fallbacks.** Answers come back as structured JSON in the app's existing shapes. A declined
+    request is retried server-side (`fallbacks: "default"`). When Claude can't answer, the
+    assistant uses the knowledge base instead.
+  - **Cost.** Each question or scan is one paid API request. Claude Opus 5.5 costs $4 / $20 per
+    million input and output tokens. `ANTHROPIC_MODEL=claude-sonnet-5-5` or
+    `claude-haiku-5-5` costs less, if their answers are good enough for you.
+  - **Without a key,** everything works as before, and the crop doctor says its results are a
+    demonstration.
+- **Scheduled reports** go out every Monday or every 1st of the month at 07:00 Ghana time, with
+  the report's CSV attached (PDFs are drawn in the browser, so they can't be emailed).
+  - A background thread in each worker checks every minute. It claims due rows with
+    `FOR UPDATE SKIP LOCKED`, so several workers send each report once.
+  - Without email set up, a due report is recorded as failed and moves on to its next time.
 - **Several API workers** share live events through PostgreSQL `LISTEN/NOTIFY`
   (channel `agrictec_events`), so `uvicorn --workers N` or several hosts work without Redis.
