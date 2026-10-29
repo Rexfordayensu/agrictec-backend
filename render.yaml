@@ -1,0 +1,53 @@
+# Render Blueprint: the API and its PostgreSQL database, both on the free plan in Frankfurt
+# (the closest region to Ghana). In Render: New > Blueprint > this repository.
+#
+# The free plan is for trying the app out, not for farmers' real data:
+# - the API sleeps after 15 minutes without visitors and takes about a minute to wake;
+# - the free database is deleted 30 days after it's created, unless it's upgraded;
+# - ports 465 and 587 are blocked, so email needs SMTP_PORT=2525 (Brevo accepts it);
+# - scheduled reports don't go out while the API is asleep.
+# Changing `plan` to starter (API) and basic-256mb (database) lifts all of these.
+
+services:
+  - type: web
+    name: agrictec-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agrictec-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SEED_DEMO_DATA
+        value: "false"
+      # The Dockerfile serves on 8000; this tells Render which port to route to.
+      - key: PORT
+        value: "8000"
+      # One worker fits the free plan's 512 MB.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      # Render's load balancer reaches the API from its private network, and its
+      # X-Forwarded-For carries the visitor's address (used for rate limits).
+      - key: TRUSTED_PROXIES
+        value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # The owner's Super Admin sign-in: Render asks for these when the Blueprint is created.
+      # Password: 10+ characters with upper- and lower-case letters, a number and a symbol.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+
+databases:
+  - name: agrictec-db
+    plan: free
+    region: frankfurt
+    databaseName: agrictec
+    user: agrictec

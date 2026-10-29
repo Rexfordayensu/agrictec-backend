@@ -69,6 +69,21 @@ need the network. **The test database is wiped, so never point it at real data.*
 at once: the startup defaults are created under a PostgreSQL advisory lock. `Dockerfile` here
 and the app repository's `deploy/` folder package it all for a server.
 
+### On Render
+
+`render.yaml` is a Render Blueprint for the API and its database, on the free plan in Frankfurt.
+In Render, choose **New > Blueprint**, pick this repository, and enter `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` when asked. Render generates `SECRET_KEY` and connects the database.
+
+The free plan is for trying the app out:
+- The API sleeps after 15 minutes idle and takes about a minute to wake.
+- Scheduled reports don't run while it sleeps.
+- The free database is deleted after 30 days.
+- Ports 465 and 587 are blocked, so set `SMTP_PORT=2525` for Brevo.
+
+Paid plans lift all of these: `starter` for the API and `basic-256mb` for the database. Set
+`PUBLIC_APP_URL` (and `CORS_ORIGINS`) to the frontend's address once it's online.
+
 ## Layout
 
 ```
