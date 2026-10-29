@@ -1,10 +1,15 @@
-"""Ghana market prices from the World Food Programme's public dataset on HDX
-(https://data.humdata.org/dataset/wfp-food-prices-for-ghana): monthly retail and wholesale prices
-per market, in GHS, from WFP's market monitoring. Free and open (CC BY-IGO).
+"""Ghana market prices from two free, open sources, both monthly and in GHS:
+- MoFA's own wholesale prices (SRID Marketing Services Unit), as FAO's FPMA tool republishes them
+  (https://fpma.fao.org/giews/fpmat4/). Accra, Kumasi, Tamale, Techiman, Bolgatanga and Wa; the
+  northern and middle-belt markets are the most current.
+- The World Food Programme's dataset on HDX
+  (https://data.humdata.org/dataset/wfp-food-prices-for-ghana): retail and wholesale prices from
+  WFP's market monitoring (CC BY-IGO).
 
 Research returns exact observations only, never an average: the latest price per market for
 the asked crop, unit and package size, in a region it can name for certain. The admin still
-reviews and publishes each one (lib/market/evidence.ts rules)."""
+reviews and publishes each one (lib/market/evidence.ts rules). One source being down leaves the
+other's evidence; only both failing makes research unavailable."""
 
 import csv
 import io
@@ -22,6 +27,9 @@ DATASET = "wfp-food-prices-for-ghana"
 DATASET_PAGE = f"https://data.humdata.org/dataset/{DATASET}"
 CATALOGUE = f"https://data.humdata.org/api/3/action/package_show?id={DATASET}"
 PUBLISHER = "World Food Programme (WFP), via the Humanitarian Data Exchange"
+FPMA_API = "https://fpma.fao.org/giews/v4/global/price_module/api/v1"
+FPMA_PAGE = "https://fpma.fao.org/giews/fpmat4/#/dashboard/tool/domestic"
+FPMA_PUBLISHER = "Ministry of Food and Agriculture (SRID), via FAO's FPMA tool"
 CACHE_SECONDS = 24 * 3600
 TIMEOUT_SECONDS = 30
 MAX_EVIDENCE = 8
@@ -50,6 +58,13 @@ MARKET_REGION = {
     "sefwi wiawso": "Western North", "bibiani": "Western North", "enchi": "Western North",
     "juaboso": "Western North",
 }
+# FPMA's Ghana markets that MARKET_REGION doesn't already place.
+FPMA_MARKET_REGION = {
+    "accra (agbogbloshie)": "Greater Accra",
+    "kumasi": "Ashanti",
+    "bolgatanga": "Upper East",
+    "wa": "Upper West",
+}
 # The app's crops, as WFP names them ("Maize (white)" counts as maize).
 CROP_ALIASES = {
     "groundnut": "groundnuts",
@@ -75,6 +90,14 @@ class Observation:
     package_kg: float | None
     price: float
     price_type: str
+    source: str = "wfp"  # or "fpma"
+
+
+# Per source: the evidence's source block (title, publisher, link, kind).
+SOURCES = {
+    "wfp": {"label": "WFP food prices for Ghana", "publisher": PUBLISHER, "url": DATASET_PAGE, "kind": "market-report"},
+    "fpma": {"label": "MoFA wholesale prices", "publisher": FPMA_PUBLISHER, "url": FPMA_PAGE, "kind": "official"},
+}
 
 
 class PricesUnavailable(Exception):
@@ -161,19 +184,89 @@ def _download() -> str:
         return response.text
 
 
-def observations(download=None) -> list[Observation]:
-    """Every usable observation (downloaded once a day)."""
+def parse_fpma(series: list[dict], prices: list[dict]) -> list[Observation]:
+    """FPMA's Ghana series (market, commodity, unit) and their monthly datapoints. Each price is
+    per the series' unit ("100 kg" is a 100 kg bag). Series in other currencies or units that
+    aren't comparable (litres) are skipped, as are markets it can't place in a region."""
+    by_id = {s.get("uuid"): s for s in series if s.get("iso3_country_code") == "GHA"}
+    out: list[Observation] = []
+    for item in prices:
+        s = by_id.get(item.get("uuid"))
+        if not s or (s.get("currency") or "").upper() != "GHS":
+            continue
+        unit = _unit(s.get("measure_unit_label") or "")
+        market = (s.get("market_name") or "").strip()
+        region = FPMA_MARKET_REGION.get(market.lower()) or MARKET_REGION.get(market.lower())
+        if not unit or region not in REGIONS:
+            continue
+        for point in item.get("datapoints") or []:
+            try:
+                price = float(point["price_value"])
+                day = date.fromisoformat(str(point["date"])[:10])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if point.get("periodicity", "monthly") != "monthly" or price <= 0:
+                continue
+            out.append(
+                Observation(
+                    day=day,
+                    region=region,
+                    market=market,
+                    commodity=(s.get("commodity_name") or "").strip(),
+                    unit=unit[0],
+                    quantity=unit[1],
+                    package_kg=unit[2],
+                    price=round(price, 2),
+                    price_type=(s.get("price_type") or "").strip().title() or "Wholesale",
+                    source="fpma",
+                )
+            )
+    return out
+
+
+def _download_fpma() -> tuple[list[dict], list[dict]]:
+    """FPMA's series list (every country: the API ignores a country filter), then the Ghana
+    series' prices in one request."""
+    with httpx.Client(timeout=TIMEOUT_SECONDS * 2, follow_redirects=True) as client:
+        listing = client.get(f"{FPMA_API}/FpmaSerieDomestic/", params={"format": "json"}).raise_for_status().json()
+        series = [s for s in listing.get("results", []) if s.get("iso3_country_code") == "GHA"]
+        if not series:
+            raise PricesUnavailable("FPMA lists no Ghana series right now.")
+        ids = ",".join(s["uuid"] for s in series)
+        url, params, prices = f"{FPMA_API}/FpmaSeriePrice/", {"format": "json", "uuid__in": ids}, []
+        while url:
+            page = client.get(url, params=params).raise_for_status().json()
+            prices += page.get("results", [])
+            url, params = page.get("next"), None
+        return series, prices
+
+
+def _load(source: str) -> list[Observation]:
+    if source == "fpma":
+        return parse_fpma(*_download_fpma())
+    return parse_csv(_download())
+
+
+def observations() -> list[Observation]:
+    """Every usable observation from both sources (downloaded once a day). A source that fails
+    is left out, and the result isn't cached, so the next research tries it again."""
     global _cache
     with _lock:
         if _cache and time.monotonic() - _cache[0] < CACHE_SECONDS:
             return _cache[1]
-    try:
-        parsed = parse_csv((download or _download)())
-    except (httpx.HTTPError, ValueError) as error:
-        raise PricesUnavailable(str(error)) from error
-    with _lock:
-        _cache = (time.monotonic(), parsed)
-    return parsed
+    rows: list[Observation] = []
+    failures: list[str] = []
+    for source in SOURCES:
+        try:
+            rows += _load(source)
+        except (httpx.HTTPError, ValueError, KeyError, PricesUnavailable) as error:
+            failures.append(f"{source}: {error}")
+    if len(failures) == len(SOURCES):
+        raise PricesUnavailable("; ".join(failures))
+    if not failures:
+        with _lock:
+            _cache = (time.monotonic(), rows)
+    return rows
 
 
 def _crop_matches(crop: str, commodity: str) -> bool:
@@ -208,7 +301,7 @@ def research(query: dict, today: date, rows: list[Observation]) -> dict | None:
         return None
     evidence = [
         {
-            "id": f"wfp-{o.day.isoformat()}-{re.sub(r'[^a-z0-9]+', '-', f'{o.market} {o.commodity} {o.price_type}'.lower()).strip('-')}",
+            "id": f"{o.source}-{o.day.isoformat()}-{re.sub(r'[^a-z0-9]+', '-', f'{o.market} {o.commodity} {o.price_type}'.lower()).strip('-')}",
             "country": "GH",
             "currency": "GHS",
             "crop": query["crop"],
@@ -220,11 +313,11 @@ def research(query: dict, today: date, rows: list[Observation]) -> dict | None:
             "price": o.price,
             "observedAt": o.day.isoformat(),
             "source": {
-                "title": f"WFP food prices for Ghana: {o.commodity}, {o.market} ({o.price_type.lower()})",
-                "publisher": PUBLISHER,
-                "url": DATASET_PAGE,
+                "title": f"{SOURCES[o.source]['label']}: {o.commodity}, {o.market} ({o.price_type.lower()})",
+                "publisher": SOURCES[o.source]["publisher"],
+                "url": SOURCES[o.source]["url"],
                 "publishedAt": o.day.isoformat(),
-                "kind": "market-report",
+                "kind": SOURCES[o.source]["kind"],
                 "excerpt": f"{o.commodity}, {o.price_type}, {o.market}: GHS {o.price:,.2f} per {o.quantity:g} {o.unit}"
                 + (f" ({o.package_kg:g} kg)" if o.package_kg else "")
                 + f", {o.day:%B %Y}.",
@@ -234,8 +327,8 @@ def research(query: dict, today: date, rows: list[Observation]) -> dict | None:
     ]
     newest = chosen[0]
     age = (
-        f" That is over a year ago: WFP has published nothing newer for this query, so treat it "
-        f"as background only."
+        " That is over a year ago: neither source has published anything newer for this query, "
+        "so treat it as background only."
         if (today - newest.day).days > 365
         else ""
     )

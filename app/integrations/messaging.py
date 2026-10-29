@@ -67,9 +67,12 @@ def send_email(to: str, subject: str, text: str, attachments: list[tuple[str, st
     for filename, mime, content in attachments or []:
         maintype, subtype = mime.split("/", 1)
         message.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
+    # Port 465 is TLS from the first byte (SMTPS); other ports upgrade with STARTTLS.
+    implicit_tls = settings.smtp_port == 465
+    connect = smtplib.SMTP_SSL if implicit_tls else smtplib.SMTP
     try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=TIMEOUT_SECONDS) as smtp:
-            if settings.smtp_starttls:
+        with connect(settings.smtp_host, settings.smtp_port, timeout=TIMEOUT_SECONDS) as smtp:
+            if settings.smtp_starttls and not implicit_tls:
                 smtp.starttls()
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password or "")

@@ -80,7 +80,7 @@ app/
   schemas/         request/response bodies (camelCase)
   services/        database work, one module per frontend service; every write audited
   routers/         thin HTTP routes
-  integrations/    outside services: weather, WFP prices, Paystack, SMS/email, Smile ID
+  integrations/    outside services: weather, market prices (MoFA, WFP), Paystack, SMS/email, Smile ID
   core/            sessions, permissions dependency, audit helper, errors, rate limits, live events
 alembic/           migrations (0001 creates everything, plus the append-only audit trigger;
                    0002 adds payments, notifications and rate limits)
@@ -220,7 +220,7 @@ can see them for its redirects. To serve the API on another origin instead, set
 | Service | What it does | Needs |
 | --- | --- | --- |
 | [Open-Meteo](https://open-meteo.com) | The farmer's 7-day forecast and storm warnings, cached 15 minutes per place. An admin's weather override still wins. | Nothing (free, no key) |
-| [WFP food prices for Ghana](https://data.humdata.org/dataset/wfp-food-prices-for-ghana) (HDX) | Evidence for the admin's market research: recent market prices by crop and region, cached a day. The admin still reviews and publishes prices. | Nothing (free, no key) |
+| [MoFA wholesale prices](https://fpma.fao.org/giews/fpmat4/) (SRID, via FAO's FPMA tool) and [WFP food prices for Ghana](https://data.humdata.org/dataset/wfp-food-prices-for-ghana) (HDX) | Evidence for the admin's market research: recent market prices by crop and region, cached a day. The admin still reviews and publishes prices. | Nothing (free, no key) |
 | [Paystack](https://paystack.com) | Plan payments by MTN MoMo, Telecel Cash, AirtelTigo Money or card, in GHS. | `PAYSTACK_SECRET_KEY`, plus the webhook URL `https://YOUR_DOMAIN/api/v1/payments/paystack/webhook` in the Paystack dashboard |
 | [Arkesel](https://arkesel.com) | An SMS copy of each notification to the farmer's phone. | `ARKESEL_API_KEY` and an approved `SMS_SENDER_ID` |
 | SMTP | An email copy of each notification, for farmers with an email address. | `SMTP_HOST`, `SMTP_FROM` (and a username/password if the server needs one) |
@@ -238,10 +238,22 @@ Keep these points in mind:
   the request. The card number is sent to Smile ID once and still never stored. The integration
   follows Smile ID's published API for an "ID Verification" job with `GHANA_CARD`, but it hasn't
   been run against a live Smile ID account. Try it in the sandbox before relying on it.
-- **WFP's Ghana data is thin and old.** In October 2026 it covered markets in Bono East,
-  Northern, Volta, Bono and Oti only (not Ashanti or Greater Accra), and its newest prices were
-  from July 2023. Research says when evidence is over a year old. For current prices, add a
-  better source behind `app/integrations/market_prices.py`, such as MoFA/SRID or Esoko.
+- **Market price coverage is uneven.** Research uses whichever source has the newer price for a
+  market. As of October 2026:
+
+  | Source | Markets | Newest prices |
+  | --- | --- | --- |
+  | MoFA via FAO | Tamale (Northern), Techiman (Bono East), Bolgatanga (Upper East) | May 2026 |
+  | MoFA via FAO | Wa (Upper West) | March 2026 |
+  | MoFA via FAO | Accra Agbogbloshie (Greater Accra) | December 2024 |
+  | MoFA via FAO | Kumasi (Ashanti) | August 2023 |
+  | WFP | Bono, Volta, Oti and others | July 2023 |
+
+  MoFA's prices are wholesale per package (e.g. a 100 kg bag of maize). Research says when
+  evidence is over a year old. If either source is down, research uses the other.
+
+  Some regions have no current market: Western, Central, Eastern and the rest of the south. For
+  those, a paid source such as Esoko can be added behind `app/integrations/market_prices.py`.
 - **When a service is unreachable,** weather and research answer `unavailable` and the app
   says so; nothing is invented.
 - **Claude.**

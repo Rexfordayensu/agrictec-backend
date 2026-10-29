@@ -86,9 +86,9 @@ class ResearchQuery(CamelModel):
 
 @router.post("/content/market/research", tags=["Admin content"])
 def research_market_prices(body: ResearchQuery, ctx: allowed("content.manage")):
-    """Source-backed Ghanaian observations (WFP market monitoring) for one crop, unit and
-    package size: the latest per market, never an average. Nothing is published: the admin
-    reviews each one first."""
+    """Source-backed Ghanaian observations (MoFA wholesale prices via FAO, and WFP market
+    monitoring) for one crop, unit and package size: the latest per market, never an average.
+    Nothing is published: the admin reviews each one first."""
     query = body.model_dump(by_alias=True)
     try:
         found = market_prices.research(query, today(), market_prices.observations())
@@ -96,14 +96,14 @@ def research_market_prices(body: ResearchQuery, ctx: allowed("content.manage")):
         return {
             "status": "unavailable",
             "message": "Market price data unavailable",
-            "reason": "The WFP price dataset couldn't be reached just now. Try again in a moment.",
+            "reason": "Neither price source (MoFA via FAO, WFP) could be reached just now. Try again in a moment.",
         }
     if not found:
         return {
             "status": "unavailable",
             "message": "Market price data unavailable",
             "reason": (
-                "No WFP observation matches this crop, unit and package size"
+                "No MoFA or WFP observation matches this crop, unit and package size"
                 + (" in this region" if body.region else "")
                 + ". Try another unit (kg, or a bag with its weight) or leave the region empty."
             ),

@@ -44,6 +44,31 @@ WFP_CSV = """date,admin1,admin2,market,latitude,longitude,category,commodity,uni
 """
 
 
+# FPMA's answers on 2026-10-29, trimmed: a series list (other countries included) and prices.
+FPMA_SERIES = [
+    {"uuid": "t-maize", "iso3_country_code": "GHA", "market_name": "Tamale", "commodity_name": "Maize",
+     "price_type": "WHOLESALE", "currency": "GHS", "measure_unit_label": "100 kg"},
+    {"uuid": "b-cowpea", "iso3_country_code": "GHA", "market_name": "Bolgatanga", "commodity_name": "Cowpeas (white)",
+     "price_type": "WHOLESALE", "currency": "GHS", "measure_unit_label": "109 kg"},
+    {"uuid": "t-oil", "iso3_country_code": "GHA", "market_name": "Tamale", "commodity_name": "Palm oil",
+     "price_type": "WHOLESALE", "currency": "GHS", "measure_unit_label": "18 Liter"},
+    {"uuid": "x-maize", "iso3_country_code": "GHA", "market_name": "Nowhere", "commodity_name": "Maize",
+     "price_type": "WHOLESALE", "currency": "GHS", "measure_unit_label": "100 kg"},
+    {"uuid": "afg", "iso3_country_code": "AFG", "market_name": "Faryab", "commodity_name": "Maize",
+     "price_type": "RETAIL", "currency": "AFN", "measure_unit_label": "Kg"},
+]
+FPMA_PRICES = [
+    {"uuid": "t-maize", "datapoints": [
+        {"price_value": 320.51, "date": "2026-05-01", "periodicity": "monthly"},
+        {"price_value": 320.51, "date": "2026-04-01", "periodicity": "monthly"},
+    ]},
+    {"uuid": "b-cowpea", "datapoints": [{"price_value": 1500.0, "date": "2026-05-01", "periodicity": "monthly"}]},
+    {"uuid": "t-oil", "datapoints": [{"price_value": 700.0, "date": "2026-05-01", "periodicity": "monthly"}]},
+    {"uuid": "x-maize", "datapoints": [{"price_value": 300.0, "date": "2026-05-01", "periodicity": "monthly"}]},
+    {"uuid": "afg", "datapoints": [{"price_value": 30.0, "date": "2026-05-01", "periodicity": "monthly"}]},
+]
+
+
 @pytest.fixture
 def settings():
     return get_settings()
@@ -84,7 +109,7 @@ def test_the_assistant_speaks_of_real_weather_only():
     assert "drainage" in values["rainAdvice"]
 
 
-# ---------- Market prices (WFP) ----------
+# ---------- Market prices (MoFA via FAO FPMA, and WFP) ----------
 
 
 def test_wfp_rows_are_placed_in_todays_regions():
@@ -122,6 +147,44 @@ def test_research_returns_exact_observations_never_an_average():
     assert market_prices.research({**query, "region": "Volta"}, date(2026, 10, 29), rows) is None
     bags = market_prices.research({"crop": "Maize", "unit": "bag", "quantity": 1, "packageWeightKg": 100}, date(2026, 10, 29), rows)
     assert bags["evidence"][0]["market"] == "Ejura"
+
+
+def test_fpma_rows_are_mofa_wholesale_prices_per_package():
+    rows = market_prices.parse_fpma(FPMA_SERIES, FPMA_PRICES)
+    # Litres aren't comparable, unplaceable markets and other countries are left out.
+    assert {(o.market, o.region, o.commodity) for o in rows} == {
+        ("Tamale", "Northern", "Maize"), ("Bolgatanga", "Upper East", "Cowpeas (white)")}
+    latest = max((o for o in rows if o.market == "Tamale"), key=lambda o: o.day)
+    assert (latest.unit, latest.quantity, latest.package_kg, latest.price) == ("bag", 1, 100.0, 320.51)
+    assert latest.price_type == "Wholesale" and latest.source == "fpma"
+
+
+def test_research_takes_the_newest_from_either_source():
+    rows = market_prices.parse_csv(WFP_CSV) + market_prices.parse_fpma(FPMA_SERIES, FPMA_PRICES)
+    query = {"crop": "Maize", "unit": "bag", "quantity": 1, "packageWeightKg": 100}
+    found = market_prices.research(query, date(2026, 10, 29), rows)
+    assert [(e["market"], e["observedAt"]) for e in found["evidence"]] == [("Ejura", "2026-08-15"), ("Tamale", "2026-05-01")]
+    mofa = found["evidence"][1]
+    assert mofa["id"].startswith("fpma-") and mofa["source"]["kind"] == "official"
+    assert "Ministry of Food and Agriculture" in mofa["source"]["publisher"]
+    cowpeas = market_prices.research({"crop": "Cowpea", "unit": "bag", "quantity": 1, "packageWeightKg": 109}, date(2026, 10, 29), rows)
+    assert cowpeas["evidence"][0]["region"] == "Upper East"
+
+
+def test_one_price_source_down_leaves_the_other(monkeypatch):
+    monkeypatch.setattr(market_prices, "_cache", None)
+
+    def wfp_down():
+        raise httpx.ConnectError("unreachable")
+
+    monkeypatch.setattr(market_prices, "_download", wfp_down)
+    monkeypatch.setattr(market_prices, "_download_fpma", lambda: (FPMA_SERIES, FPMA_PRICES))
+    rows = market_prices.observations()
+    assert {o.source for o in rows} == {"fpma"}
+    assert market_prices._cache is None  # a partial answer isn't kept for the day
+    monkeypatch.setattr(market_prices, "_download_fpma", wfp_down)
+    with pytest.raises(market_prices.PricesUnavailable):
+        market_prices.observations()
 
 
 def test_research_endpoint_needs_content_rights(monkeypatch):
@@ -238,6 +301,44 @@ def test_sms_numbers_and_gateway_errors():
     assert messaging.msisdn("12345") is None
     with pytest.raises(messaging.MessageFailed, match="not configured"):
         messaging.send_sms("0241234567", "hi")
+
+
+def test_email_uses_starttls_on_587_and_tls_from_the_start_on_465(settings, monkeypatch):
+    used = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            used.append((type(self).__name__, port))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            used.append("starttls")
+
+        def login(self, user, password):
+            used.append(("login", user))
+
+        def send_message(self, message):
+            used.append(("to", message["To"]))
+
+    class FakeSMTP_SSL(FakeSMTP):
+        pass
+
+    monkeypatch.setattr(messaging.smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(messaging.smtplib, "SMTP_SSL", FakeSMTP_SSL)
+    for name, value in {"smtp_host": "mail.example.com", "smtp_from": "AgriCtec <hi@example.com>", "smtp_username": "hi@example.com"}.items():
+        monkeypatch.setattr(settings, name, value)
+    monkeypatch.setattr(settings, "smtp_port", 587)
+    messaging.send_email("ama@example.com", "Hello", "Body")
+    assert used == [("FakeSMTP", 587), "starttls", ("login", "hi@example.com"), ("to", "ama@example.com")]
+    used.clear()
+    monkeypatch.setattr(settings, "smtp_port", 465)
+    messaging.send_email("ama@example.com", "Hello", "Body")
+    assert used == [("FakeSMTP_SSL", 465), ("login", "hi@example.com"), ("to", "ama@example.com")]
 
 
 # ---------- Ghana Card checks (Smile ID) ----------
