@@ -1,6 +1,7 @@
 # AgriCtec API
 
-The backend the frontend's README asks for under "Moving to a real backend". It's built with
+The backend for the AgriCtec Next.js app, which lives in its own repository (clone the two side by
+side; the app's `deploy/` folder builds this one from `../../agrictec-backend`). It's built with
 **FastAPI**, **PostgreSQL** (via SQLAlchemy 2 and Alembic) and **Python 3.12+**. It owns every piece
 of data the browser used to keep in localStorage. It authenticates every request with httpOnly
 sessions, hashes passwords with argon2, and enforces the admin role matrix on the server. It
@@ -15,15 +16,14 @@ Every rule from the frontend's `lib/` folder runs here, and none of them are app
 - the yield model, the reports and the report builder
 - the deterministic demo seed
 
-JSON is **camelCase**, with the same shapes as `types/index.ts` and `types/admin.ts`.
+JSON is **camelCase**, with the same shapes as the app's `types/index.ts` and `types/admin.ts`.
 
 ## Quick start
 
 ```bash
-cd backend
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 copy .env.example .env            # then set DATABASE_URL (and the rest) in .env
 createdb -U postgres agrictec     # or create the database in pgAdmin
 alembic upgrade head              # creates the tables and the audit-log trigger
@@ -67,7 +67,7 @@ need the network. **The test database is wiped, so never point it at real data.*
 
 `TRUSTED_PROXIES` takes addresses or networks (e.g. `172.28.0.0/16`). Several workers can start
 at once: the startup defaults are created under a PostgreSQL advisory lock. `Dockerfile` here
-and [`deploy/`](../deploy/README.md) package it all for a server.
+and the app repository's `deploy/` folder package it all for a server.
 
 ## Layout
 

@@ -1,4 +1,4 @@
-"""Settings, read from the environment (and backend/.env)."""
+"""Settings, read from the environment (and .env)."""
 
 import ipaddress
 from functools import lru_cache

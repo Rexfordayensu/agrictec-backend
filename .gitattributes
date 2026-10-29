@@ -1,0 +1,5 @@
+# Keep LF line endings in the repository and working copy (Prettier and the shell scripts expect them).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
