@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import Date, DateTime, Numeric, delete, func, insert, select
+from sqlalchemy import Date, DateTime, Numeric, delete, func, insert, select, text
 from sqlalchemy.orm import Session as DB
 
 from app.core.audit import append_audit
@@ -291,14 +291,26 @@ def reset_default_lenders(db: DB) -> None:
         db.merge(row)
 
 
+# Any fixed number: the advisory lock that lets one API worker at a time run the bootstrap.
+BOOTSTRAP_LOCK = 4_710_221
+
+
+def _bootstrap_lock(db: DB) -> None:
+    """Held until the transaction ends, so workers starting together don't insert twice."""
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": BOOTSTRAP_LOCK})
+
+
 def bootstrap(db: DB, *, seed_demo_data: bool) -> None:
     """At startup: the first credit rules, the default lenders and the super admin; then the
     demo world when asked for and never seeded."""
+    _bootstrap_lock(db)
     if not db.scalar(select(func.count()).select_from(CreditConfigVersion)):
         insert_default_credit_config(db)
     if not db.scalar(select(func.count()).select_from(Lender)):
         reset_default_lenders(db)
     seed.ensure_super_admin(db)
     db.commit()
-    if seed_demo_data and seed.seed_demo(db):
+    if seed_demo_data:
+        _bootstrap_lock(db)
+        seed.seed_demo(db)
         db.commit()

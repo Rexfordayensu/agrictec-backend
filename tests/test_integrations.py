@@ -141,6 +141,22 @@ def test_signups_are_rate_limited_per_address():
     assert codes[:10] == [201] * 10 and codes[10] == 429
 
 
+def test_forwarded_addresses_are_believed_only_from_trusted_networks(settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.core.ratelimit import client_ip
+
+    def request(peer, forwarded="203.0.113.7, 172.18.0.5"):
+        return SimpleNamespace(client=SimpleNamespace(host=peer), headers={"x-forwarded-for": forwarded})
+
+    monkeypatch.setattr(settings, "trusted_proxies", ["127.0.0.1", "172.16.0.0/12"])
+    assert client_ip(request("172.18.0.4")) == "203.0.113.7"  # a container on the compose network
+    assert client_ip(request("127.0.0.1")) == "203.0.113.7"
+    assert client_ip(request("198.51.100.9")) == "198.51.100.9"  # anyone else can't pick an address
+    assert client_ip(request("not-an-ip")) == "not-an-ip"
+    assert client_ip(request("172.18.0.4", forwarded="")) == "172.18.0.4"
+
+
 # ---------- Payments (Paystack) ----------
 
 
@@ -275,3 +291,53 @@ def test_events_reach_streams_on_every_worker():
     thread.start()
     thread.join(30)
     assert received and '"userId": "farmer-1"' in received[0]
+
+
+# ---------- Deployment ----------
+
+
+def test_production_needs_the_owners_admin_sign_in():
+    from app.config import Settings
+
+    secure = {"environment": "production", "secret_key": "s" * 40, "cookie_secure": True, "seed_demo_data": False}
+    with pytest.raises(ValueError, match="ADMIN_EMAIL"):
+        Settings(**secure, admin_email="", admin_password="")
+    assert Settings(**secure, admin_email="owner@example.com", admin_password="Owner$ecret2026").admin_email
+    with pytest.raises(ValueError, match="TRUSTED_PROXIES"):
+        Settings(trusted_proxies="127.0.0.1,web")
+
+
+def test_workers_starting_together_bootstrap_once():
+    from sqlalchemy import func, select, text
+
+    from app.db import Base, SessionLocal, engine
+    from app.domain.defaults import DEFAULT_LENDERS
+    from app.models import Admin, CreditConfigVersion, Lender
+    from app.services.backup import bootstrap
+
+    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_truncate"))
+        conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        conn.execute(text("ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_truncate"))
+    errors = []
+    start = threading.Barrier(4)
+
+    def worker():
+        try:
+            with SessionLocal() as db:
+                start.wait()
+                bootstrap(db, seed_demo_data=False)
+        except Exception as error:  # noqa: BLE001 - collected for the assertion below
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert errors == []
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(CreditConfigVersion)) == 1
+        assert db.scalar(select(func.count()).select_from(Lender)) == len(DEFAULT_LENDERS)
+        assert db.scalar(select(func.count()).select_from(Admin)) == 1

@@ -1,5 +1,6 @@
 """Settings, read from the environment (and backend/.env)."""
 
+import ipaddress
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -24,7 +25,8 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_domain: str | None = None
 
-    # Proxies whose X-Forwarded-For is believed (the Next.js app forwards from the same host).
+    # Proxies whose X-Forwarded-For is believed: addresses or networks, e.g. 172.16.0.0/12 for
+    # containers. The Next.js app forwards from the same host by default.
     trusted_proxies: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
     rate_limits_enabled: bool = True
 
@@ -110,6 +112,13 @@ class Settings(BaseSettings):
     def check(self) -> "Settings":
         if "*" in self.cors_origins:
             raise ValueError("CORS_ORIGINS cannot be '*': list the frontend origins.")
+        for entry in self.trusted_proxies:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                raise ValueError(
+                    f"TRUSTED_PROXIES: {entry!r} is not an IP address or network (e.g. 172.16.0.0/12)."
+                ) from None
         if bool(self.admin_email) != bool(self.admin_password):
             raise ValueError("Set both ADMIN_EMAIL and ADMIN_PASSWORD (or neither).")
         if self.admin_password:
@@ -123,6 +132,9 @@ class Settings(BaseSettings):
                 raise ValueError("Set SECRET_KEY to a random value of 32+ characters in production.")
             if not self.cookie_secure:
                 raise ValueError("COOKIE_SECURE must be true in production (HTTPS only).")
+            if not self.admin_email:
+                # Otherwise the demo super admin, whose password is published, would be created.
+                raise ValueError("Set ADMIN_EMAIL and ADMIN_PASSWORD in production.")
         return self
 
     @property

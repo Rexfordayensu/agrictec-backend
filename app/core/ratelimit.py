@@ -2,10 +2,12 @@
 
 A fixed window per key (an IP address or a signed-in account): one atomic upsert per request.
 Behind a proxy (the Next.js app, nginx), the client's address comes from X-Forwarded-For, which
-is trusted only when the request arrives from one of TRUSTED_PROXIES."""
+is trusted only when the request arrives from one of TRUSTED_PROXIES (addresses or networks)."""
 
+import ipaddress
 from collections.abc import Callable
 from datetime import timedelta
+from functools import lru_cache
 
 from fastapi import Depends, Request
 from sqlalchemy import text
@@ -27,9 +29,22 @@ _UPSERT = text(
 )
 
 
+@lru_cache(maxsize=8)
+def _networks(entries: tuple[str, ...]) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    return tuple(ipaddress.ip_network(entry, strict=False) for entry in entries)
+
+
+def _trusted(peer: str) -> bool:
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(address in network for network in _networks(tuple(get_settings().trusted_proxies)))
+
+
 def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else "unknown"
-    if peer in get_settings().trusted_proxies:
+    if _trusted(peer):
         forwarded = request.headers.get("x-forwarded-for", "")
         first = forwarded.split(",")[0].strip()
         if first:

@@ -53,9 +53,21 @@ set TEST_DATABASE_URL=postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:543
 python -m pytest
 ```
 
-There are 61 tests. Each one runs against a database built by the real migrations and emptied
+There are 64 tests. Each one runs against a database built by the real migrations and emptied
 before every test. Outside services are replaced with recorded responses, so the tests never
 need the network. **The test database is wiped, so never point it at real data.**
+
+## Production
+
+`ENVIRONMENT=production` refuses to start unless all of these hold:
+- `SECRET_KEY` is random and 32+ characters
+- `COOKIE_SECURE` is on
+- demo seeding is off
+- `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set, so the demo super admin can't exist
+
+`TRUSTED_PROXIES` takes addresses or networks (e.g. `172.28.0.0/16`). Several workers can start
+at once: the startup defaults are created under a PostgreSQL advisory lock. `Dockerfile` here
+and [`deploy/`](../deploy/README.md) package it all for a server.
 
 ## Layout
 
