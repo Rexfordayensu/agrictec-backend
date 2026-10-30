@@ -107,6 +107,63 @@ def test_the_assistant_speaks_of_real_weather_only():
     values = _weather_values({"description": "Showers", "temp": 25.0, "humidity": 90, "rainChance": 75, "storm": False})
     assert values["weather"] == "Showers, 25°C, 90% humidity and 75% chance of rain"
     assert "drainage" in values["rainAdvice"]
+    # MET Norway gives no probability: the rain amount speaks instead, never a made-up chance.
+    values = _weather_values({"description": "Light rain", "temp": 24.0, "humidity": 90, "rainMm": 1.2, "rainChance": None})
+    assert values["weather"] == "Light rain, 24°C, 90% humidity and 1.2 mm of rain this hour"
+    assert "drainage" in values["rainAdvice"]
+    dry = _weather_values({"description": "Cloudy", "temp": 30.0, "humidity": 60, "rainMm": 0.0, "rainChance": None})
+    assert "soil moisture" in dry["rainAdvice"]
+
+
+def _met_step(time, temp, hum, wind, one=None, six=None):
+    data = {"instant": {"details": {"air_temperature": temp, "relative_humidity": hum, "wind_speed": wind}}}
+    if one:
+        data["next_1_hours"] = {"summary": {"symbol_code": one[0]}, "details": {"precipitation_amount": one[1]}}
+    if six:
+        data["next_6_hours"] = {"summary": {"symbol_code": six[0]}, "details": {"air_temperature_max": six[1], "air_temperature_min": six[2], "precipitation_amount": six[3]}}
+    return {"time": time, "data": data}
+
+
+# MET Norway's Locationforecast for Kumasi (trimmed): hourly steps, then 6-hourly.
+MET = {"properties": {"timeseries": [
+    _met_step("2026-10-30T22:00:00Z", 24.0, 90.0, 2.0, ("rainandthunder", 1.2), ("rain", 24.5, 23.0, 5.0)),
+    _met_step("2026-10-30T23:00:00Z", 23.6, 92.0, 1.5, ("cloudy", 0.0), ("rain", 24.0, 22.8, 3.8)),
+    _met_step("2026-10-31T00:00:00Z", 23.2, 94.0, 1.0, ("lightrain_night", 0.3), ("lightrain", 23.5, 22.6, 3.0)),
+    _met_step("2026-10-31T06:00:00Z", 22.8, 97.0, 1.2, None, ("partlycloudy_day", 29.0, 22.5, 2.0)),
+    _met_step("2026-10-31T12:00:00Z", 28.9, 70.0, 3.0, None, ("lightrainshowers_day", 30.2, 26.0, 1.0)),
+    _met_step("2026-11-09T00:00:00Z", 23.0, 95.0, 1.0),
+]}}
+
+
+def test_met_norway_answers_in_the_apps_shape_without_a_made_up_chance():
+    report = weather.build_report(KUMASI, weather.met_to_raw(MET), datetime(2026, 10, 30, 22, 10, tzinfo=UTC))
+    assert report["provider"] == "MET Norway" and report["updatedAt"] == "2026-10-30T22:00:00.000Z"
+    assert report["current"] == {"temp": 24.0, "description": "Thunderstorm", "humidity": 90, "rainMm": 1.2, "rainChance": None, "windKph": 7.2}
+    assert report["_storm"] is True
+    first, second = report["daily"]  # 9 November has one reading only: not a day's range.
+    assert (first["date"], first["minTemp"], first["maxTemp"], first["rainMm"], first["rainChance"]) == ("2026-10-30", 22.8, 24.5, 1.2, None)
+    # Each hour's rain counted once: 0.3 (00-01h) + 2.0 (06-12h) + 1.0 (12-18h).
+    assert (second["date"], second["description"], second["rainMm"]) == ("2026-10-31", "Light showers", 3.3)
+    assert [h["rainChance"] for h in report["upcoming"]] == [None, None, None]
+
+
+def test_met_norway_steps_in_when_open_meteo_refuses(monkeypatch):
+    calls = []
+
+    def refused(url, params=None, timeout=None, headers=None):
+        calls.append(url)
+        if "open-meteo" in url:
+            return httpx.Response(429, json={"error": True, "reason": "Daily API request limit exceeded."}, request=httpx.Request("GET", url))
+        assert headers["User-Agent"].startswith("AgriCtec/") and params == {"lat": 6.6885, "lon": -1.6244}
+        return httpx.Response(200, json=MET, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(weather.httpx, "get", refused)
+    raw = weather._fetch(*weather.coordinates_of(KUMASI))
+    assert raw["_provider"] == "MET Norway"
+    assert len([u for u in calls if "open-meteo" in u]) == 1  # a 429 isn't asked again
+    monkeypatch.setattr(weather.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    with pytest.raises(weather.WeatherUnavailable):
+        weather._fetch(6.0, -1.0)
 
 
 # ---------- Market prices (MoFA via FAO FPMA, and WFP) ----------

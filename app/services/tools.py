@@ -90,7 +90,9 @@ def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
         w = ctx.weather
         lines.append(
             f"- Weather at the farm now: {w.get('description')}, {w.get('temp')}°C, humidity "
-            f"{w.get('humidity')}%, rain chance {w.get('rainChance')}%, wind {w.get('windKph')} km/h"
+            f"{w.get('humidity')}%, "
+            + (f"rain chance {w['rainChance']}%" if w.get("rainChance") is not None else f"rain {w.get('rainMm') or 0} mm this hour (no rain probability given)")
+            + f", wind {w.get('windKph')} km/h"
             + ("; a storm is forecast" if w.get("storm") else "")
         )
     own = {c.lower() for c in ctx.primary_crops}

@@ -180,14 +180,16 @@ def _weather_values(weather: dict | None) -> dict[str, str]:
             "rainAdvice": "Location-specific rainfall advice is unavailable right now.",
             "fieldWorkAdvice": "Check a trusted local forecast before planning weather-sensitive field work.",
         }
+    chance = weather.get("rainChance")
+    # Without a probability (MET Norway gives none for Ghana), rain already falling or forecast
+    # for the hour counts as rain expected.
+    wet = chance >= 60 if chance is not None else (weather.get("rainMm") or 0) >= 0.5
+    rain = f"{chance}% chance of rain" if chance is not None else f"{weather.get('rainMm') or 0:g} mm of rain this hour"
     return {
-        "weather": (
-            f"{weather['description']}, {weather['temp']:g}°C, {weather['humidity']}% humidity and "
-            f"{weather['rainChance']}% chance of rain"
-        ),
+        "weather": f"{weather['description']}, {weather['temp']:g}°C, {weather['humidity']}% humidity and {rain}",
         "rainAdvice": (
             "Check field drainage and postpone spraying if rain is expected."
-            if weather["rainChance"] >= 60
+            if wet
             else "Check soil moisture and mulch to reduce water loss; water young plants where needed."
         ),
         "fieldWorkAdvice": (
