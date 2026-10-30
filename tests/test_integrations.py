@@ -369,6 +369,17 @@ def test_identity_checks_are_advice_for_reviewers_only(settings, monkeypatch):
 # ---------- Live events across workers ----------
 
 
+def test_the_events_connection_keeps_the_urls_options(settings, monkeypatch):
+    from app.core import events
+
+    seen = {}
+    monkeypatch.setattr(events.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or (_ for _ in ()).throw(RuntimeError("stop")))
+    monkeypatch.setattr(settings, "database_url", "postgresql://postgres.ref:pw@pooler.example.com:5432/postgres?sslmode=require")
+    with pytest.raises(RuntimeError):
+        events._connect()
+    assert seen["host"] == "pooler.example.com" and seen["user"] == "postgres.ref" and seen["sslmode"] == "require"
+
+
 def test_events_reach_streams_on_every_worker():
     """Two buses stand for two API workers: what one publishes, the other's stream receives."""
     received = []

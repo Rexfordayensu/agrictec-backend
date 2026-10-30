@@ -15,6 +15,10 @@ class Settings(BaseSettings):
 
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = "postgresql+psycopg2://agrictec:agrictec@localhost:5432/agrictec"
+    # Connections per API worker (SQLAlchemy's pool, plus overflow under load). Keep the total
+    # under the database's limit: Supabase's free session pooler allows about 15.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
     api_prefix: str = "/api/v1"
     # Signs the guest device cookie. Required (32+ characters) in production.
     secret_key: str = "dev-only-insecure-secret-change-me"

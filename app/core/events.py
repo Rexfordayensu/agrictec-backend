@@ -36,6 +36,8 @@ def _connect():
         password=url.password,
         dbname=url.database,
         connect_timeout=5,
+        # The URL's options too (sslmode=require for hosted databases such as Supabase).
+        **{key: value for key, value in url.query.items() if isinstance(value, str)},
     )
     connection.set_session(autocommit=True)
     return connection
