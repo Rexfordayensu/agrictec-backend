@@ -1,12 +1,16 @@
-# Render Blueprint: the API and its PostgreSQL database, both on the free plan in Frankfurt
-# (the closest region to Ghana). In Render: New > Blueprint > this repository.
+# Render Blueprint for the API, on the free plan in Frankfurt (the closest region to Ghana).
+# In Render: New > Blueprint > this repository.
 #
-# The free plan is for trying the app out, not for farmers' real data:
-# - the API sleeps after 15 minutes without visitors and takes about a minute to wake;
-# - the free database is deleted 30 days after it's created, unless it's upgraded;
+# The database is Supabase's free PostgreSQL (it doesn't expire, unlike Render's free one).
+# DATABASE_URL is its *Session pooler* connection string (Supabase: Connect > Session pooler),
+# which works over IPv4 and keeps LISTEN/NOTIFY and advisory locks working. Render asks for it
+# when the Blueprint is created; afterwards it's edited in the service's Environment page.
+#
+# The free plan is for trying the app out:
+# - the API sleeps after 15 minutes without visitors (an uptime monitor can keep it awake);
 # - ports 465 and 587 are blocked, so email needs SMTP_PORT=2525 (Brevo accepts it);
 # - scheduled reports don't go out while the API is asleep.
-# Changing `plan` to starter (API) and basic-256mb (database) lifts all of these.
+# Changing `plan` to starter lifts these.
 
 services:
   - type: web
@@ -19,9 +23,13 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: agrictec-db
-          property: connectionString
+        sync: false
+      # One worker uses at most 5 + 5 pooled connections, plus 2 for live events: under the
+      # free session pooler's limit of about 15.
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
       - key: SECRET_KEY
         generateValue: true
       - key: COOKIE_SECURE
@@ -44,10 +52,3 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-
-databases:
-  - name: agrictec-db
-    plan: free
-    region: frankfurt
-    databaseName: agrictec
-    user: agrictec

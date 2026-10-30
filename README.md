@@ -71,18 +71,25 @@ and the app repository's `deploy/` folder package it all for a server.
 
 ### On Render
 
-`render.yaml` is a Render Blueprint for the API and its database, on the free plan in Frankfurt.
-In Render, choose **New > Blueprint**, pick this repository, and enter `ADMIN_EMAIL` and
-`ADMIN_PASSWORD` when asked. Render generates `SECRET_KEY` and connects the database.
+`render.yaml` is a Render Blueprint for the API on the free plan in Frankfurt. The database is
+Supabase's free PostgreSQL, because Render's free database is deleted after 30 days.
+
+To set it up, choose **New > Blueprint** in Render and pick this repository. Render asks for:
+- `DATABASE_URL`: Supabase's **Session pooler** string, found under Connect > Session pooler.
+  It works over IPv4, and session mode keeps LISTEN/NOTIFY and advisory locks working.
+- `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+
+Render generates `SECRET_KEY` itself. `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` keep one worker
+under the session pooler's limit of about 15 connections.
 
 The free plan is for trying the app out:
-- The API sleeps after 15 minutes idle and takes about a minute to wake.
+- The API sleeps after 15 minutes idle and takes about a minute to wake. An uptime monitor
+  pinging `/api/v1/health` keeps it awake.
 - Scheduled reports don't run while it sleeps.
-- The free database is deleted after 30 days.
 - Ports 465 and 587 are blocked, so set `SMTP_PORT=2525` for Brevo.
 
-Paid plans lift all of these: `starter` for the API and `basic-256mb` for the database. Set
-`PUBLIC_APP_URL` (and `CORS_ORIGINS`) to the frontend's address once it's online.
+The `starter` plan lifts all of these. Set `PUBLIC_APP_URL` and `CORS_ORIGINS` to the frontend's
+address once it's online.
 
 ## Layout
 
