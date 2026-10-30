@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     smile_id_partner_id: str | None = None
     smile_id_api_key: str | None = None
     smile_id_sandbox: bool = True
+    # OpenWeather (https://openweathermap.org, free key): the weather backup with a chance of rain,
+    # used when Open-Meteo refuses (its free limit is per IP, and shared hosts run out). Without
+    # it, MET Norway is the backup, which publishes no chance of rain for Ghana.
+    openweather_api_key: str | None = None
     # Claude (https://platform.claude.com): the assistant's answers and the crop doctor's reading
     # of a photo. Without a key, the assistant answers from the admin's knowledge base and the
     # crop doctor gives its demonstration results.
@@ -115,6 +119,7 @@ class Settings(BaseSettings):
         "smtp_from",
         "smile_id_partner_id",
         "smile_id_api_key",
+        "openweather_api_key",
         "anthropic_api_key",
         mode="before",
     )

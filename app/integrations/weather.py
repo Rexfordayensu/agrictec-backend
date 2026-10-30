@@ -1,11 +1,13 @@
 """Weather from Open-Meteo (https://open-meteo.com): free, no API key, global forecasts. When
 Open-Meteo refuses (its free limit is per IP, and hosts such as Render share their IPs, so it
-answers 429 by midday) or is down, MET Norway's Locationforecast (https://api.met.no, also
-free and keyless; CC BY 4.0) answers instead.
+answers 429 by midday) or is down, the backups answer in turn:
+1. OpenWeather (https://openweathermap.org), when OPENWEATHER_API_KEY is set: current weather and
+   the 5-day forecast in 3-hour steps, with a chance of rain. Its limit is per key, not per IP.
+2. MET Norway's Locationforecast (https://api.met.no, free and keyless; CC BY 4.0).
 
 The report has the shape the frontend's weather.service validates (types/market.ts
-WeatherReport): the requested location echoed back, current conditions, 7 days and the next
-24 hours. MET Norway publishes no chance of rain for Ghana, so with it rainChance is null:
+WeatherReport): the requested location echoed back, current conditions, up to 7 days and the
+next 24 hours. MET Norway publishes no chance of rain for Ghana, so with it rainChance is null:
 never estimated. Answers are cached for 15 minutes per place."""
 
 import logging
@@ -26,6 +28,8 @@ PROVIDER = "Open-Meteo"
 ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 MET_PROVIDER = "MET Norway"
 MET_ENDPOINT = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
+OWM_PROVIDER = "OpenWeather"
+OWM_BASE = "https://api.openweathermap.org/data/2.5"
 CACHE_SECONDS = 15 * 60
 TIMEOUT_SECONDS = 10
 
@@ -108,12 +112,20 @@ def _utc(local: str) -> str:
 
 
 def _fetch(lat: float, lng: float) -> dict[str, Any]:
-    """Open-Meteo's answer, or MET Norway's in the same shape when Open-Meteo can't answer."""
+    """Open-Meteo's answer, or a backup's in the same shape when Open-Meteo can't answer."""
     try:
         return _fetch_open_meteo(lat, lng)
     except WeatherUnavailable:
-        log.warning("Weather: using %s instead of %s.", MET_PROVIDER, PROVIDER)
-        return met_to_raw(_fetch_met(lat, lng))
+        pass
+    if get_settings().openweather_api_key:
+        try:
+            raw = owm_to_raw(*_fetch_owm(lat, lng))
+            log.warning("Weather: used %s instead of %s.", OWM_PROVIDER, PROVIDER)
+            return raw
+        except WeatherUnavailable:
+            pass
+    log.warning("Weather: using %s instead of %s.", MET_PROVIDER, PROVIDER)
+    return met_to_raw(_fetch_met(lat, lng))
 
 
 def _fetch_open_meteo(lat: float, lng: float) -> dict[str, Any]:
@@ -211,7 +223,9 @@ def met_to_raw(met: dict[str, Any]) -> dict[str, Any]:
             "weather_code": _met_code((now_block.get("summary") or {}).get("symbol_code")),
             "wind_speed_10m": details["wind_speed"] * 3.6,
         }
-        hourly: dict[str, list] = {"time": [], "temperature_2m": [], "precipitation_probability": [], "weather_code": []}
+        hourly: dict[str, list] = {
+            "time": [], "temperature_2m": [], "precipitation_probability": [], "weather_code": [],
+        }
         days: dict[str, dict] = {}
         covered_until = ""
         for entry in series:
@@ -231,7 +245,8 @@ def met_to_raw(met: dict[str, Any]) -> dict[str, Any]:
             if instant.get("wind_speed") is not None:
                 stats["winds"].append(instant["wind_speed"] * 3.6)
             six = (entry["data"].get("next_6_hours") or {}).get("details") or {}
-            stats["temps"] += [t for t in (six.get("air_temperature_max"), six.get("air_temperature_min")) if t is not None]
+            extremes = (six.get("air_temperature_max"), six.get("air_temperature_min"))
+            stats["temps"] += [t for t in extremes if t is not None]
             if code is not None:
                 stats["codes"].append(code)
             # Rain without counting an hour twice: each step's own period, from where the last ended.
@@ -258,6 +273,121 @@ def met_to_raw(met: dict[str, Any]) -> dict[str, Any]:
     return {"_provider": MET_PROVIDER, "current": current, "hourly": hourly, "daily": daily}
 
 
+def _fetch_owm(lat: float, lng: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    """OpenWeather's current weather and 5-day forecast. The key travels in the URL, so errors
+    are logged by status and OpenWeather's message only, never with the URL."""
+    key = get_settings().openweather_api_key
+    params = {"lat": round(lat, 4), "lon": round(lng, 4), "units": "metric", "appid": key}
+    answers = []
+    for path in ("weather", "forecast"):
+        try:
+            response = httpx.get(f"{OWM_BASE}/{path}", params=params, timeout=TIMEOUT_SECONDS)
+        except httpx.HTTPError as error:
+            log.warning("Weather: %s unreachable: %s", OWM_PROVIDER, type(error).__name__)
+            raise WeatherUnavailable(f"{OWM_PROVIDER} unreachable") from None
+        if response.status_code != 200:
+            # 401 is a wrong key, or a new one OpenWeather hasn't switched on yet (up to 2 hours).
+            log.warning("Weather: %s answered %s: %s", OWM_PROVIDER, response.status_code, response.text[:200])
+            raise WeatherUnavailable(f"{OWM_PROVIDER} answered {response.status_code}")
+        try:
+            answers.append(response.json())
+        except ValueError:
+            raise WeatherUnavailable(f"{OWM_PROVIDER} answered something unreadable") from None
+    return answers[0], answers[1]
+
+
+def _owm_code(condition: int | None) -> int | None:
+    """OpenWeather's condition ID (https://openweathermap.org/weather-conditions) as a WMO code."""
+    if condition is None:
+        return None
+    if 200 <= condition < 300:
+        return 95
+    if 300 <= condition < 400:
+        return {300: 51, 301: 53, 302: 55}.get(condition, 53)
+    rain = {500: 61, 501: 63, 502: 65, 503: 65, 504: 65, 511: 66, 520: 80, 521: 81, 522: 82, 531: 82}
+    if condition in rain:
+        return rain[condition]
+    if 600 <= condition < 700:
+        return 73
+    if condition in (701, 741):
+        return 45
+    clouds = {800: 0, 801: 1, 802: 2}
+    # Haze, dust and smoke (harmattan) keep OpenWeather's own words; their code is "overcast".
+    return clouds.get(condition, 3)
+
+
+def _owm_words(entry: dict) -> tuple[int | None, str | None]:
+    weather = (entry.get("weather") or [{}])[0]
+    words = (weather.get("description") or "").strip()
+    return _owm_code(weather.get("id")), (words[:1].upper() + words[1:]) or None
+
+
+def _gmt(stamp: int) -> str:
+    return datetime.fromtimestamp(stamp, UTC).strftime("%Y-%m-%dT%H:%M")
+
+
+def owm_to_raw(now: dict[str, Any], forecast: dict[str, Any]) -> dict[str, Any]:
+    """OpenWeather's answers in Open-Meteo's shape (as build_report reads it), with its own
+    descriptions. Steps are 3-hourly: the next 24 hours of them, and days in GMT (Ghana's time).
+    The chance of rain is OpenWeather's `pop` (0-1) as a percentage. Wind m/s -> km/h."""
+    try:
+        code, words = _owm_words(now)
+        current = {
+            "time": _gmt(now["dt"]),  # When it was observed: never in the future.
+            "temperature_2m": now["main"]["temp"],
+            "relative_humidity_2m": now["main"]["humidity"],
+            "precipitation": (now.get("rain") or {}).get("1h", 0.0),
+            "weather_code": code,
+            "description": words,
+            "wind_speed_10m": (now.get("wind") or {}).get("speed", 0.0) * 3.6,
+        }
+        steps = forecast["list"]
+        first = steps[0]["dt"]
+        hourly: dict[str, list] = {
+            "time": [], "temperature_2m": [], "precipitation_probability": [], "weather_code": [], "description": [],
+        }
+        days: dict[str, dict] = {}
+        for step in steps:
+            code, words = _owm_words(step)
+            chance = step.get("pop")
+            moment = _gmt(step["dt"])
+            if step["dt"] < first + 24 * 3600:
+                hourly["time"].append(moment)
+                hourly["temperature_2m"].append(step["main"]["temp"])
+                hourly["precipitation_probability"].append(None if chance is None else chance * 100)
+                hourly["weather_code"].append(code)
+                hourly["description"].append(words)
+            day = days.setdefault(
+                moment[:10], {"temps": [], "rain": 0.0, "chances": [], "winds": [], "worst": (-1, None, None)}
+            )
+            main = step["main"]
+            day["temps"] += [t for t in (main.get("temp"), main.get("temp_min"), main.get("temp_max")) if t is not None]
+            day["rain"] += (step.get("rain") or {}).get("3h", 0.0)
+            if chance is not None:
+                day["chances"].append(chance * 100)
+            day["winds"].append((step.get("wind") or {}).get("speed", 0.0) * 3.6)
+            if code is not None and code > day["worst"][0]:
+                day["worst"] = (code, code, words)
+        daily: dict[str, list] = {
+            "time": [], "weather_code": [], "description": [], "temperature_2m_max": [], "temperature_2m_min": [],
+            "precipitation_sum": [], "precipitation_probability_max": [], "wind_speed_10m_max": [],
+        }
+        for date, day in list(days.items())[:7]:
+            if len(day["temps"]) < 2:
+                continue
+            daily["time"].append(date)
+            daily["weather_code"].append(day["worst"][1])
+            daily["description"].append(day["worst"][2])
+            daily["temperature_2m_max"].append(max(day["temps"]))
+            daily["temperature_2m_min"].append(min(day["temps"]))
+            daily["precipitation_sum"].append(round(day["rain"], 1))
+            daily["precipitation_probability_max"].append(max(day["chances"]) if day["chances"] else None)
+            daily["wind_speed_10m_max"].append(max(day["winds"]))
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise WeatherUnavailable(f"Incomplete answer from {OWM_PROVIDER}: {error}") from error
+    return {"_provider": OWM_PROVIDER, "current": current, "hourly": hourly, "daily": daily}
+
+
 def _chance(value: Any) -> int | None:
     """A rain probability as 0-100, or None when the provider didn't give one."""
     return None if value is None else max(0, min(100, round(float(value))))
@@ -270,11 +400,14 @@ def build_report(location: dict, raw: dict[str, Any], now: datetime) -> dict:
         current = raw["current"]
         hourly = raw["hourly"]
         daily = raw["daily"]
+        # A provider's own words when it gives them (OpenWeather: "Haze"), else the WMO code's.
+        hour_words = hourly.get("description") or [None] * len(hourly["time"])
+        day_words = daily.get("description") or [None] * len(daily["time"])
         hours = [
-            (_utc(t), temp, _chance(chance), code)
-            for t, temp, chance, code in zip(
+            (_utc(t), temp, _chance(chance), words or describe(code))
+            for t, temp, chance, code, words in zip(
                 hourly["time"], hourly["temperature_2m"], hourly["precipitation_probability"],
-                hourly["weather_code"], strict=True,
+                hourly["weather_code"], hour_words, strict=True,
             )
             if temp is not None
         ]
@@ -288,7 +421,7 @@ def build_report(location: dict, raw: dict[str, Any], now: datetime) -> dict:
             "updatedAt": _utc(current["time"]),
             "current": {
                 "temp": round(float(current["temperature_2m"]), 1),
-                "description": describe(current.get("weather_code")),
+                "description": current.get("description") or describe(current.get("weather_code")),
                 "humidity": max(0, min(100, round(float(current["relative_humidity_2m"])))),
                 "rainMm": max(0.0, float(current.get("precipitation") or 0)),
                 "rainChance": rain_now,
@@ -297,23 +430,23 @@ def build_report(location: dict, raw: dict[str, Any], now: datetime) -> dict:
             "daily": [
                 {
                     "date": day,
-                    "description": describe(code),
+                    "description": words or describe(code),
                     "minTemp": round(float(low), 1),
                     "maxTemp": round(float(high), 1),
                     "rainMm": max(0.0, float(rain or 0)),
                     "rainChance": _chance(chance),
                     "windKph": max(0.0, round(float(wind or 0), 1)),
                 }
-                for day, code, high, low, rain, chance, wind in zip(
-                    daily["time"], daily["weather_code"], daily["temperature_2m_max"],
+                for day, code, words, high, low, rain, chance, wind in zip(
+                    daily["time"], daily["weather_code"], day_words, daily["temperature_2m_max"],
                     daily["temperature_2m_min"], daily["precipitation_sum"],
                     daily["precipitation_probability_max"], daily["wind_speed_10m_max"], strict=True,
                 )
                 if high is not None and low is not None
             ][:16],
             "upcoming": [
-                {"time": t, "description": describe(code), "temp": round(float(temp), 1), "rainChance": chance}
-                for t, temp, chance, code in upcoming
+                {"time": t, "description": words, "temp": round(float(temp), 1), "rainChance": chance}
+                for t, temp, chance, words in upcoming
             ],
             # Not part of WeatherReport: lets the assistant's advice spot a thunderstorm.
             "_storm": is_storm(current.get("weather_code")),

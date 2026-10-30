@@ -242,6 +242,8 @@ can see them for its redirects. To serve the API on another origin instead, set
 | Service | What it does | Needs |
 | --- | --- | --- |
 | [Open-Meteo](https://open-meteo.com) | The farmer's 7-day forecast and storm warnings, cached 15 minutes per place. An admin's weather override still wins. | Nothing (free, no key) |
+| [OpenWeather](https://openweathermap.org) | The backup when Open-Meteo refuses (its free limit is per IP, and Render's shared IPs run out by midday): a 5-day forecast with a chance of rain. Its limit is per key. | `OPENWEATHER_API_KEY` (free account) |
+| [MET Norway](https://api.met.no) | The last backup, used without an OpenWeather key or when OpenWeather fails. It gives no chance of rain for Ghana, so the app shows "not given". | Nothing (free, no key) |
 | [MoFA wholesale prices](https://fpma.fao.org/giews/fpmat4/) (SRID, via FAO's FPMA tool) and [WFP food prices for Ghana](https://data.humdata.org/dataset/wfp-food-prices-for-ghana) (HDX) | Evidence for the admin's market research: recent market prices by crop and region, cached a day. The admin still reviews and publishes prices. | Nothing (free, no key) |
 | [Paystack](https://paystack.com) | Plan payments by MTN MoMo, Telecel Cash, AirtelTigo Money or card, in GHS. | `PAYSTACK_SECRET_KEY`, plus the webhook URL `https://YOUR_DOMAIN/api/v1/payments/paystack/webhook` in the Paystack dashboard |
 | [Arkesel](https://arkesel.com) | An SMS copy of each notification to the farmer's phone. | `ARKESEL_API_KEY` and an approved `SMS_SENDER_ID` |

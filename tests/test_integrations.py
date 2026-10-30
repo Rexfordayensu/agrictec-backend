@@ -149,6 +149,79 @@ def test_met_norway_answers_in_the_apps_shape_without_a_made_up_chance():
     assert [h["rainChance"] for h in report["upcoming"]] == [None, None, None]
 
 
+def _ts(text):
+    return int(datetime.fromisoformat(text).replace(tzinfo=UTC).timestamp())
+
+
+def _owm_step(time, temp, low, high, pop, condition, words, wind, rain=None):
+    step = {"dt": _ts(time), "main": {"temp": temp, "temp_min": low, "temp_max": high, "humidity": 70},
+            "weather": [{"id": condition, "description": words}], "wind": {"speed": wind}, "pop": pop}
+    if rain is not None:
+        step["rain"] = {"3h": rain}
+    return step
+
+
+# OpenWeather's current weather and 5-day forecast for Tema (trimmed): 3-hour steps.
+OWM_NOW = {"dt": _ts("2026-10-30T14:10"), "main": {"temp": 31.3, "humidity": 59},
+           "weather": [{"id": 500, "description": "light rain"}], "wind": {"speed": 6.5}, "rain": {"1h": 0.3}}
+OWM_FORECAST = {"list": [
+    _owm_step("2026-10-30T15:00", 31.0, 30.5, 31.4, 0.62, 500, "light rain", 5.0, rain=0.8),
+    _owm_step("2026-10-30T18:00", 28.0, 27.8, 28.3, 0.2, 721, "haze", 4.0),
+    _owm_step("2026-10-30T21:00", 26.1, 26.0, 26.4, 0.0, 804, "overcast clouds", 3.0),
+    _owm_step("2026-10-31T00:00", 25.2, 25.0, 25.5, 0.1, 800, "clear sky", 2.5),
+    _owm_step("2026-10-31T12:00", 31.8, 31.5, 32.0, 0.9, 211, "thunderstorm", 9.0, rain=6.2),
+    _owm_step("2026-10-31T15:00", 30.9, 30.7, 31.2, 0.4, 501, "moderate rain", 7.0, rain=2.0),
+]}
+
+
+def test_openweather_answers_with_a_chance_of_rain_and_its_own_words():
+    report = weather.build_report(KUMASI, weather.owm_to_raw(OWM_NOW, OWM_FORECAST), datetime(2026, 10, 30, 14, 20, tzinfo=UTC))
+    assert report["provider"] == "OpenWeather" and report["updatedAt"] == "2026-10-30T14:10:00.000Z"
+    # The chance of rain is the coming 3 hours' probability.
+    assert report["current"] == {"temp": 31.3, "description": "Light rain", "humidity": 59, "rainMm": 0.3, "rainChance": 62, "windKph": 23.4}
+    # The next 24 hours of steps; harmattan haze keeps its name.
+    assert [(h["description"], h["rainChance"]) for h in report["upcoming"]] == [
+        ("Light rain", 62), ("Haze", 20), ("Overcast clouds", 0), ("Clear sky", 10), ("Thunderstorm", 90)]
+    today, tomorrow = report["daily"]
+    assert today == {"date": "2026-10-30", "description": "Light rain", "minTemp": 26.0, "maxTemp": 31.4, "rainMm": 0.8, "rainChance": 62, "windKph": 18.0}
+    assert (tomorrow["description"], tomorrow["minTemp"], tomorrow["maxTemp"], tomorrow["rainMm"], tomorrow["rainChance"]) == ("Thunderstorm", 25.0, 32.0, 8.2, 90)
+
+
+def test_openweather_comes_before_met_norway_and_its_key_stays_out_of_the_logs(settings, monkeypatch, caplog):
+    secret = "owm-secret-key-123"
+    calls = []
+    owm_status = {"code": 200}
+
+    def fake_get(url, params=None, timeout=None, headers=None):
+        calls.append(url.split("/")[2] + "/" + url.rsplit("/", 1)[-1])
+        request = httpx.Request("GET", url, params=params)
+        if "open-meteo" in url:
+            return httpx.Response(429, json={"error": True, "reason": "Daily API request limit exceeded."}, request=request)
+        if "openweathermap" in url:
+            assert params["appid"] == secret and params["units"] == "metric"
+            if owm_status["code"] != 200:
+                return httpx.Response(owm_status["code"], json={"cod": 401, "message": "Invalid API key."}, request=request)
+            return httpx.Response(200, json=OWM_NOW if url.endswith("/weather") else OWM_FORECAST, request=request)
+        return httpx.Response(200, json=MET, request=request)
+
+    monkeypatch.setattr(weather.httpx, "get", fake_get)
+    monkeypatch.setattr(settings, "openweather_api_key", secret)
+    # The test database's migration (alembic's fileConfig) disables existing loggers.
+    monkeypatch.setattr(weather.log, "disabled", False)
+    assert weather._fetch(5.67, -0.02)["_provider"] == "OpenWeather"
+    # A wrong (or not yet active) key: MET Norway answers, and the key isn't logged.
+    owm_status["code"] = 401
+    calls.clear()
+    with caplog.at_level("WARNING"):
+        assert weather._fetch(5.67, -0.02)["_provider"] == "MET Norway"
+    assert "401" in caplog.text and secret not in caplog.text
+    # Without a key, OpenWeather isn't asked at all.
+    monkeypatch.setattr(settings, "openweather_api_key", None)
+    calls.clear()
+    assert weather._fetch(5.67, -0.02)["_provider"] == "MET Norway"
+    assert not [c for c in calls if "openweathermap" in c]
+
+
 def test_met_norway_steps_in_when_open_meteo_refuses(monkeypatch):
     calls = []
 
