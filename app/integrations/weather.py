@@ -4,6 +4,7 @@ The report has the shape the frontend's weather.service validates (types/market.
 WeatherReport): the requested location echoed back, current conditions, 7 days and the next
 24 hours. Answers are cached for 15 minutes per place."""
 
+import logging
 import threading
 import time
 from datetime import UTC, datetime
@@ -13,6 +14,8 @@ import httpx
 
 from app.domain.clock import iso
 from app.domain.constants import REGIONS
+
+log = logging.getLogger("agrictec.weather")
 
 PROVIDER = "Open-Meteo"
 ENDPOINT = "https://api.open-meteo.com/v1/forecast"
@@ -116,8 +119,13 @@ def _fetch(lat: float, lng: float) -> dict[str, Any]:
             response = httpx.get(ENDPOINT, params=params, timeout=TIMEOUT_SECONDS)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as error:
+            # Open-Meteo explains a refusal (e.g. 429, a shared IP over the free daily limit).
+            last_error = error
+            log.warning("Weather: %s answered %s: %s", PROVIDER, error.response.status_code, error.response.text[:200])
         except (httpx.HTTPError, ValueError) as error:
             last_error = error
+            log.warning("Weather: %s unreachable: %s", PROVIDER, type(error).__name__)
     raise WeatherUnavailable(str(last_error))
 
 
