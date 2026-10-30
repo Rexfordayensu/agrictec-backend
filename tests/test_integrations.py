@@ -124,8 +124,9 @@ def _met_step(time, temp, hum, wind, one=None, six=None):
     return {"time": time, "data": data}
 
 
-# MET Norway's Locationforecast for Kumasi (trimmed): hourly steps, then 6-hourly.
-MET = {"properties": {"timeseries": [
+# MET Norway's Locationforecast for Kumasi (trimmed): hourly steps, then 6-hourly. Issued at
+# 21:40; its first step is the coming hour.
+MET = {"properties": {"meta": {"updated_at": "2026-10-30T21:40:11Z"}, "timeseries": [
     _met_step("2026-10-30T22:00:00Z", 24.0, 90.0, 2.0, ("rainandthunder", 1.2), ("rain", 24.5, 23.0, 5.0)),
     _met_step("2026-10-30T23:00:00Z", 23.6, 92.0, 1.5, ("cloudy", 0.0), ("rain", 24.0, 22.8, 3.8)),
     _met_step("2026-10-31T00:00:00Z", 23.2, 94.0, 1.0, ("lightrain_night", 0.3), ("lightrain", 23.5, 22.6, 3.0)),
@@ -137,7 +138,8 @@ MET = {"properties": {"timeseries": [
 
 def test_met_norway_answers_in_the_apps_shape_without_a_made_up_chance():
     report = weather.build_report(KUMASI, weather.met_to_raw(MET), datetime(2026, 10, 30, 22, 10, tzinfo=UTC))
-    assert report["provider"] == "MET Norway" and report["updatedAt"] == "2026-10-30T22:00:00.000Z"
+    # Updated when MET issued it, never the (possibly future) first step.
+    assert report["provider"] == "MET Norway" and report["updatedAt"] == "2026-10-30T21:40:00.000Z"
     assert report["current"] == {"temp": 24.0, "description": "Thunderstorm", "humidity": 90, "rainMm": 1.2, "rainChance": None, "windKph": 7.2}
     assert report["_storm"] is True
     first, second = report["daily"]  # 9 November has one reading only: not a day's range.

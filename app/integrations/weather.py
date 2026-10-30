@@ -202,7 +202,9 @@ def met_to_raw(met: dict[str, Any]) -> dict[str, Any]:
         details = first["data"]["instant"]["details"]
         now_block = first["data"].get("next_1_hours") or first["data"].get("next_6_hours") or {}
         current = {
-            "time": first["time"][:16],
+            # When MET issued the forecast. The first step can be the coming hour (14:00 asked
+            # at 13:55), and a time in the future is rejected by the app as an invalid report.
+            "time": (met["properties"].get("meta", {}).get("updated_at") or first["time"])[:16],
             "temperature_2m": details["air_temperature"],
             "relative_humidity_2m": details["relative_humidity"],
             "precipitation": (now_block.get("details") or {}).get("precipitation_amount"),
