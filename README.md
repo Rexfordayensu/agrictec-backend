@@ -218,7 +218,11 @@ can see them for its redirects. To serve the API on another origin instead, set
   - sign-up 10 per hour, farmer sign-in 20 per 15 minutes, guest 10 per hour
   - admin sign-in 30 per 15 minutes, on top of the per-email lockout
   - assistant 30, crop doctor 10, weather 60 and place search 30 per minute
-  `X-Forwarded-For` is believed only from `TRUSTED_PROXIES`.
+  `X-Forwarded-For` is believed only from `TRUSTED_PROXIES`, and it is read from the right. The
+  first entry that isn't a trusted proxy is used, because entries to its left can be made up by
+  the visitor. Behind a hosted frontend (Vercel), set the same `FRONTEND_PROXY_SECRET` in the API
+  and the web app; the app then vouches for each visitor's address. Without it, those visitors
+  share the host's address.
 - **Payments.** A plan is paid for only when Paystack confirms it. The return page and the
   webhook both re-verify the transaction with Paystack, and the amount and currency must match
   the plan exactly. Confirming twice is harmless. The webhook rejects anything without a valid

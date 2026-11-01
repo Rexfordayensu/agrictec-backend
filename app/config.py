@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Proxies whose X-Forwarded-For is believed: addresses or networks, e.g. 172.16.0.0/12 for
     # containers. The Next.js app forwards from the same host by default.
     trusted_proxies: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
+    # Shared with the Next.js app (the same FRONTEND_PROXY_SECRET there): with it, the app vouches
+    # for each visitor's address, which hosted proxies (Vercel) can't otherwise prove. Without it,
+    # visitors coming through such a proxy share its address for rate limits.
+    frontend_proxy_secret: str | None = None
     rate_limits_enabled: bool = True
 
     farmer_session_days: int = 30
@@ -121,6 +125,7 @@ class Settings(BaseSettings):
         "smile_id_api_key",
         "openweather_api_key",
         "anthropic_api_key",
+        "frontend_proxy_secret",
         mode="before",
     )
     @classmethod
