@@ -93,6 +93,14 @@ def hit(db: DB, key: str, limit: int, window: timedelta) -> bool:
     return count <= limit
 
 
+def purge_stale(db: DB, keep: timedelta = timedelta(days=1)) -> int:
+    """Deletes counters idle for longer than `keep` (the longest window is an hour); how many.
+    They hold visitors' IP addresses, which the privacy policy promises to keep only a day."""
+    count = db.execute(text("DELETE FROM rate_limits WHERE window_start < :cutoff"), {"cutoff": now_utc() - keep}).rowcount
+    db.commit()
+    return count
+
+
 def rate_limit(name: str, limit: int, per_seconds: int) -> Callable[..., None]:
     """A dependency: at most `limit` requests per `per_seconds` from one client address."""
     window = timedelta(seconds=per_seconds)

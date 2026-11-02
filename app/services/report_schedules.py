@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session as DB
 from app.config import get_settings
 from app.core.audit import append_audit
 from app.core.errors import AppError, NotFound
+from app.core.ratelimit import purge_stale
 from app.db import SessionLocal
 from app.domain.clock import iso, now_utc
 from app.domain.reports import REPORT_CATALOG, report_file_name, report_to_csv
@@ -198,7 +199,8 @@ def _send(db: DB, row: ReportSchedule) -> str:
 
 
 class Scheduler:
-    """The background loop (one per worker; the row locks keep sends single)."""
+    """The background loop (one per worker; the row locks keep sends single). It also clears
+    stale rate-limit counters."""
 
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -222,6 +224,7 @@ class Scheduler:
             try:
                 with SessionLocal() as db:
                     send_due(db)
+                    purge_stale(db)
             except Exception:  # A bad moment (database restart) shouldn't end the loop.
                 log.warning("Scheduled reports check failed", exc_info=True)
 

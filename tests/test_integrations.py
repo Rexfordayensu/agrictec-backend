@@ -336,6 +336,22 @@ def test_signups_are_rate_limited_per_address():
     assert codes[:10] == [201] * 10 and codes[10] == 429
 
 
+def test_stale_rate_limit_counters_are_deleted_after_a_day(db):
+    from datetime import timedelta
+
+    from app.core.ratelimit import hit, purge_stale
+    from app.domain.clock import now_utc
+    from app.models import RateLimit
+
+    hit(db, "login:203.0.113.7", 20, timedelta(minutes=15))
+    hit(db, "login:198.51.100.9", 20, timedelta(minutes=15))
+    db.get(RateLimit, "login:198.51.100.9").window_start = now_utc() - timedelta(days=1, minutes=1)
+    db.commit()
+    assert purge_stale(db) == 1
+    db.expire_all()
+    assert [row.key for row in db.query(RateLimit)] == ["login:203.0.113.7"]
+
+
 def test_forwarded_addresses_are_believed_only_from_trusted_networks(settings, monkeypatch):
     from types import SimpleNamespace
 
