@@ -6,10 +6,12 @@ The client's address, most trusted first:
 1. X-AgriCtec-Client-IP, when the request also carries FRONTEND_PROXY_SECRET: the Next.js app
    (proxy.ts) vouches for the visitor it served. Hosted proxies (Vercel) aren't on a fixed
    network, so they can't be listed in TRUSTED_PROXIES.
-2. X-Forwarded-For, read from the right, when the request arrives from one of TRUSTED_PROXIES:
-   the first entry that isn't itself a trusted proxy. Each proxy appends what it saw, so that
-   entry was written by a proxy; the entries left of it come from the visitor and can be made up.
-3. Otherwise the connecting address."""
+2. From one of TRUSTED_PROXIES: TRUSTED_CLIENT_IP_HEADER, when set (Render: Cloudflare's
+   CF-Connecting-IP, since Cloudflare's own address ends X-Forwarded-For).
+3. From one of TRUSTED_PROXIES: X-Forwarded-For, read from the right: the first entry that
+   isn't itself a trusted proxy. Each proxy appends what it saw, so that entry was written by a
+   proxy; the entries left of it come from the visitor and can be made up.
+4. Otherwise the connecting address."""
 
 import hmac
 import ipaddress
@@ -69,6 +71,10 @@ def client_ip(request: Request) -> str:
             return vouched
     peer = request.client.host if request.client else "unknown"
     if _trusted(peer):
+        header = get_settings().trusted_client_ip_header
+        stated = _valid_ip(request.headers.get(header, "")) if header else None
+        if stated:
+            return stated
         chain = [entry.strip() for entry in request.headers.get("x-forwarded-for", "").split(",") if entry.strip()]
         for entry in reversed(chain):
             if not _trusted(entry):

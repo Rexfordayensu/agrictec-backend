@@ -42,10 +42,13 @@ services:
       # One worker fits the free plan's 512 MB.
       - key: WEB_CONCURRENCY
         value: "1"
-      # Render's load balancer reaches the API from its private network, and its
-      # X-Forwarded-For carries the visitor's address (used for rate limits).
+      # Render's load balancer reaches the API from its private network. Cloudflare sits in front
+      # and puts the visitor's address in CF-Connecting-IP (used for rate limits); its own
+      # address ends X-Forwarded-For.
       - key: TRUSTED_PROXIES
         value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - key: TRUSTED_CLIENT_IP_HEADER
+        value: cf-connecting-ip
       # The owner's Super Admin sign-in: Render asks for these when the Blueprint is created.
       # Password: 10+ characters with upper- and lower-case letters, a number and a symbol.
       - key: ADMIN_EMAIL

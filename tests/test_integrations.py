@@ -350,10 +350,33 @@ def test_forwarded_addresses_are_believed_only_from_trusted_networks(settings, m
     assert client_ip(request("198.51.100.9")) == "198.51.100.9"  # anyone else can't pick an address
     assert client_ip(request("not-an-ip")) == "not-an-ip"
     assert client_ip(request("172.18.0.4", forwarded="")) == "172.18.0.4"
-    # Seen in production behind Render: the visitor's own made-up entries stay on the left, and
-    # the load balancer appends the real address. The rightmost untrusted entry is believed.
+    # A visitor's own made-up entries stay on the left, and each proxy appends the address it saw.
+    # The rightmost untrusted entry is believed.
     assert client_ip(request("172.18.0.4", forwarded="1.2.3.4, 203.0.113.7")) == "203.0.113.7"
     assert client_ip(request("172.18.0.4", forwarded="9.9.9.9, 8.8.8.8, 203.0.113.7, 172.18.0.5")) == "203.0.113.7"
+
+
+def test_a_trusted_proxys_client_ip_header_is_believed_when_configured(settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.core.ratelimit import client_ip
+
+    def request(peer, headers):
+        # Seen in production on Render: Cloudflare's edge address ends X-Forwarded-For, and differs
+        # from one request to the next; CF-Connecting-IP holds the visitor's.
+        return SimpleNamespace(client=SimpleNamespace(host=peer), headers={"x-forwarded-for": "1.2.3.4, 41.66.200.7, 104.22.17.40", **headers})
+
+    monkeypatch.setattr(settings, "trusted_proxies", ["10.0.0.0/8"])
+    stated = {"cf-connecting-ip": "41.66.200.7"}
+    assert client_ip(request("10.21.157.68", stated)) == "104.22.17.40"  # not configured: ignored
+    monkeypatch.setattr(settings, "trusted_client_ip_header", "cf-connecting-ip")
+    assert client_ip(request("10.21.157.68", stated)) == "41.66.200.7"
+    assert client_ip(request("10.21.157.68", {"cf-connecting-ip": "junk"})) == "104.22.17.40"
+    assert client_ip(request("198.51.100.9", stated)) == "198.51.100.9"  # only from a trusted proxy
+    # The app's vouched address still comes first (Vercel's own address is Cloudflare's visitor).
+    monkeypatch.setattr(settings, "frontend_proxy_secret", "s3cret-shared-with-the-app")
+    vouched = {"x-agrictec-client-ip": "102.176.65.12", "x-agrictec-proxy-secret": "s3cret-shared-with-the-app"}
+    assert client_ip(request("10.21.157.68", {**stated, **vouched})) == "102.176.65.12"
 
 
 def test_the_app_vouches_for_its_visitors_address_only_with_the_shared_secret(settings, monkeypatch):
