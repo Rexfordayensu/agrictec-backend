@@ -377,3 +377,34 @@ class AssistantTestResult(CamelModel):
     matched_keyword: str | None
     reply: dict[str, Any]
 
+
+
+# ---------- Error alerts (web push) ----------
+
+
+class PushKeys(CamelModel):
+    p256dh: Text(200)
+    auth: Text(100)
+
+
+class PushSubscriptionIn(CamelModel):
+    """A browser's PushSubscription.toJSON()."""
+
+    endpoint: Text(2000)
+    keys: PushKeys
+
+
+class PushEndpoint(CamelModel):
+    endpoint: Text(2000)
+
+
+class AlertsStatus(CamelModel):
+    """The key browsers subscribe with, and how many of this admin's devices get alerts."""
+
+    public_key: str
+    devices: int
+
+
+class TestAlertResult(CamelModel):
+    sent: int
+    failed: int

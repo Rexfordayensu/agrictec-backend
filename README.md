@@ -91,6 +91,61 @@ The free plan is for trying the app out:
 The `starter` plan lifts all of these. Set `PUBLIC_APP_URL` and `CORS_ORIGINS` to the frontend's
 address once it's online.
 
+### Backups
+
+Supabase's free plan keeps no backups, so `.github/workflows/backup.yml` makes one every night at
+01:30 UTC. It has four steps:
+1. It copies the `public` schema with `pg_dump`.
+2. It restores the copy into a throwaway PostgreSQL of the same version, to prove it works.
+3. It encrypts the copy with GPG (AES-256).
+4. It keeps the copy as a workflow artifact for 30 days.
+
+It needs two repository secrets:
+- `BACKUP_DATABASE_URL`: the same string as `DATABASE_URL`.
+- `BACKUP_PASSPHRASE`: without it, no backup can be opened, so keep a copy somewhere safe.
+
+GitHub emails the owner when a run fails. **Run workflow** on the Actions tab makes a backup on
+demand.
+
+To restore one:
+1. Download the artifact from the run's page and unzip it.
+2. Decrypt it:
+
+   ```sh
+   gpg --output agrictec.dump --decrypt agrictec-YYYY-MM-DD.dump.gpg   # asks for the passphrase
+   ```
+
+3. Stop the API (Render: **Suspend**), so nothing writes while you restore.
+4. Replace the schema. The copy creates the `public` schema itself:
+
+   ```sh
+   psql "$DATABASE_URL" -c "drop schema public cascade"
+   pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error agrictec.dump
+   ```
+
+5. Resume the API.
+
+Test a restore against a scratch database first, never straight on production. Use a
+`pg_restore` at least as new as the server's PostgreSQL.
+
+### Error alerts
+
+Admins who can manage settings can get a phone notification when something breaks. They turn it
+on per device under **System settings > Error alerts**.
+
+Two things send an alert:
+- an unhandled error in a request
+- a failure of the background jobs
+
+Each kind of error is sent at most once every 15 minutes. An alert names the route and the error's
+type, never request data. The full traceback stays in the server log.
+
+It is standard web push (`app/integrations/push.py`) through the browser's own push service, with
+no account anywhere:
+- The VAPID key is derived from `SECRET_KEY`. Rotating `SECRET_KEY` means turning alerts on again.
+- On iPhone, alerts need AgriCtec added to the Home Screen and opened from there.
+- An alert can't arrive while the API itself is down or asleep. That is the uptime monitor's job.
+
 ## Layout
 
 ```

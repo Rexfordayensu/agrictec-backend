@@ -418,6 +418,23 @@ class ReportSchedule(Base):
     __table_args__ = (Index("ix_report_schedules_due", "active", "next_run_at"),)
 
 
+class PushSubscription(Base):
+    """A phone or computer where an admin turned on error alerts (web push, app/core/alerts.py).
+    Never in a platform backup."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    admin_id: Mapped[str] = mapped_column(
+        ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The browser's push service address for this device, and its encryption keys.
+    endpoint: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    p256dh: Mapped[str] = mapped_column(String(200), nullable=False)
+    auth: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = created_column()
+
+
 class RateLimit(Base):
     """Requests counted per client and route, in fixed windows (app/core/ratelimit.py)."""
 

@@ -1,0 +1,88 @@
+# Every night: a copy of the production database (the app's `public` schema on Supabase),
+# encrypted with a passphrase only the owner knows, proven restorable, and kept for 30 days as a
+# workflow artifact. Supabase's free plan has no backups of its own.
+#
+# Needs two repository secrets (Settings > Secrets and variables > Actions):
+#   BACKUP_DATABASE_URL  the same connection string as DATABASE_URL on Render
+#   BACKUP_PASSPHRASE    a long passphrase; without it a backup can't be opened
+# Restoring one: see "Backups" in the README. GitHub emails the owner when a run fails.
+name: Database backup
+
+on:
+  schedule:
+    - cron: "30 1 * * *" # 01:30 in Ghana (UTC), the quietest hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - name: Check the secrets are set
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ]; then
+            echo "::error::Add the BACKUP_DATABASE_URL and BACKUP_PASSPHRASE repository secrets."
+            exit 1
+          fi
+          # The app's URL may name its driver (postgresql+psycopg2://); pg_dump doesn't.
+          echo "PGURL=${DATABASE_URL/+psycopg2/}" >> "$GITHUB_ENV"
+
+      - name: Install the PostgreSQL client that matches the server
+        run: |
+          major=$(psql "$PGURL" -Atc "select current_setting('server_version_num')::int / 10000")
+          echo "PG_MAJOR=$major" >> "$GITHUB_ENV"
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-client-$major"
+          echo "/usr/lib/postgresql/$major/bin" >> "$GITHUB_PATH"
+
+      - name: Copy the database
+        run: |
+          pg_dump --version
+          pg_dump "$PGURL" --schema=public --format=custom --no-owner --no-privileges --file=agrictec.dump
+          psql "$PGURL" -Atc "select count(*) from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'" > tables.txt
+          echo "Copied $(cat tables.txt) tables, $(du -h agrictec.dump | cut -f1)."
+
+      - name: Prove the copy restores
+        run: |
+          docker run -d --name restore -e POSTGRES_PASSWORD=check -p 55432:5432 "postgres:$PG_MAJOR" > /dev/null
+          for i in $(seq 1 30); do pg_isready -q -h localhost -p 55432 -U postgres && break; sleep 2; done
+          CHECK=postgresql://postgres:check@localhost:55432/postgres
+          # The copy creates the public schema itself.
+          psql "$CHECK" -qc "drop schema public cascade"
+          pg_restore --dbname="$CHECK" --no-owner --no-privileges --exit-on-error agrictec.dump
+          restored=$(psql "$CHECK" -Atc "select count(*) from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'")
+          [ "$restored" = "$(cat tables.txt)" ] || { echo "::error::Restored $restored tables, expected $(cat tables.txt)."; exit 1; }
+          psql "$CHECK" -c "select version_num as migration from alembic_version" \
+            -c "select (select count(*) from users) as accounts, (select count(*) from farm_records) as records, (select count(*) from loan_applications) as loan_applications"
+
+      - name: Encrypt it
+        id: encrypt
+        run: |
+          name="agrictec-$(date -u +%Y-%m-%d).dump.gpg"
+          printf '%s' "$BACKUP_PASSPHRASE" > passphrase.txt
+          gpg --batch --yes --pinentry-mode loopback --passphrase-file passphrase.txt \
+            --symmetric --cipher-algo AES256 --output "$name" agrictec.dump
+          rm -f passphrase.txt agrictec.dump
+          echo "file=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.encrypt.outputs.file }}
+          path: ${{ steps.encrypt.outputs.file }}
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0 # already encrypted

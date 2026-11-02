@@ -21,7 +21,7 @@ from app.domain.clock import iso, now_utc
 from app.domain.reports import REPORT_CATALOG, report_file_name, report_to_csv
 from app.integrations import messaging
 from app.models import Admin, ReportSchedule
-from app.services import insights
+from app.services import alerts, insights
 
 log = logging.getLogger("agrictec.report_schedules")
 
@@ -225,8 +225,9 @@ class Scheduler:
                 with SessionLocal() as db:
                     send_due(db)
                     purge_stale(db)
-            except Exception:  # A bad moment (database restart) shouldn't end the loop.
+            except Exception as error:  # A bad moment (database restart) shouldn't end the loop.
                 log.warning("Scheduled reports check failed", exc_info=True)
+                alerts.report(f"The background jobs failed: {type(error).__name__}")
 
 
 scheduler = Scheduler()

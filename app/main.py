@@ -17,7 +17,7 @@ from app.core.events import bus
 from app.core.sessions import IMPERSONATION_HEADER
 from app.db import SessionLocal
 from app.routers import admin_auth, admin_lending, admin_people, admin_platform, auth, me, platform
-from app.services import report_schedules
+from app.services import alerts, report_schedules
 from app.services.backup import bootstrap
 
 
@@ -35,6 +35,7 @@ def _message(errors: list[dict]) -> str:
 async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         bootstrap(db, seed_demo_data=get_settings().seed_demo_data)
+    alerts.refresh_devices()
     bus.start(asyncio.get_running_loop())
     report_schedules.scheduler.start()
     yield
@@ -69,6 +70,17 @@ def create_app() -> FastAPI:
     @app.exception_handler(AppError)
     async def app_error(_: Request, error: AppError):
         return JSONResponse(status_code=error.status_code, content={"detail": error.message, "code": error.code})
+
+    @app.exception_handler(Exception)
+    async def crashed(request: Request, error: Exception):
+        """An unexpected error: the farmer gets a plain message, admins an alert (only the route
+        and the error's type: never request data). Uvicorn still logs the traceback."""
+        route = getattr(request.scope.get("route"), "path", None) or "a request"
+        alerts.report(f"{request.method} {route} failed: {type(error).__name__}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Something went wrong on our side. Please try again.", "code": "server_error"},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def request_invalid(_: Request, error: RequestValidationError):

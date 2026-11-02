@@ -30,7 +30,16 @@ from app.schemas.platform import (
     Plan,
     Weather,
 )
-from app.services import admin_config, announcements, audit_log, backup, insights, platform_store, report_schedules
+from app.services import (
+    admin_config,
+    alerts,
+    announcements,
+    audit_log,
+    backup,
+    insights,
+    platform_store,
+    report_schedules,
+)
 from app.services.farmer_data import load_farmers
 
 router = APIRouter(prefix="/admin")
@@ -39,6 +48,31 @@ Database = Annotated[DB, Depends(get_db)]
 
 def allowed(permission: str):
     return Annotated[AdminContext, Depends(require(permission))]
+
+
+# ---------- Error alerts ----------
+
+
+@router.get("/alerts/push", response_model=a.AlertsStatus, tags=["Admin error alerts"])
+def alerts_status(ctx: allowed("settings.manage"), db: Database):
+    return alerts.status(db, ctx.admin)
+
+
+@router.post("/alerts/push/subscribe", response_model=a.AlertsStatus, tags=["Admin error alerts"])
+def alerts_subscribe(body: a.PushSubscriptionIn, ctx: allowed("settings.manage"), db: Database):
+    """Turns on error alerts on this device (the browser's push subscription)."""
+    return alerts.subscribe(db, ctx.admin, body.endpoint, body.keys.p256dh, body.keys.auth)
+
+
+@router.post("/alerts/push/unsubscribe", response_model=a.AlertsStatus, tags=["Admin error alerts"])
+def alerts_unsubscribe(body: a.PushEndpoint, ctx: allowed("settings.manage"), db: Database):
+    return alerts.unsubscribe(db, ctx.admin, body.endpoint)
+
+
+@router.post("/alerts/push/test", response_model=a.TestAlertResult, tags=["Admin error alerts"])
+def alerts_test(ctx: allowed("settings.manage"), db: Database):
+    """Sends a test alert to this admin's devices."""
+    return alerts.send_test(db, ctx.admin)
 
 
 # ---------- Settings ----------
