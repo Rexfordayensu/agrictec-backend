@@ -12,7 +12,7 @@ from app.core.errors import SUSPENDED_MESSAGE, AppError, Conflict, Forbidden, Un
 from app.core.security import hash_password, sign, unsign, verify_password
 from app.core.sessions import create_session, end_session
 from app.domain.clock import now_utc
-from app.domain.passwords import FARMER_PASSWORD_MIN_LENGTH
+from app.domain.passwords import farmer_password_problem
 from app.models import AuthSession, User
 from app.schemas.farm import Session
 from app.services import platform_store
@@ -59,8 +59,8 @@ def sign_up(db: DB, email: str, password: str) -> tuple[str, Session]:
     normalized = normalize_email(email)
     if not EMAIL.match(normalized):
         raise AppError("Enter a valid email address.")
-    if len(password) < FARMER_PASSWORD_MIN_LENGTH:
-        raise AppError(f"Password must be at least {FARMER_PASSWORD_MIN_LENGTH} characters")
+    if problem := farmer_password_problem(password):
+        raise AppError(problem)
     if _find(db, normalized):
         raise Conflict("An account with this email already exists")
     user = User(email=normalized, password_hash=hash_password(password), is_guest=False, created_at=now_utc())
@@ -89,8 +89,8 @@ def replace_temporary_password(db: DB, email: str, temporary: str, new_password:
     user = _find(db, email)
     if not user or not verify_password(temporary, user.password_hash):
         raise Unauthorized(BAD_CREDENTIALS, code="bad_credentials")
-    if len(new_password) < FARMER_PASSWORD_MIN_LENGTH:
-        raise AppError(f"Password must be at least {FARMER_PASSWORD_MIN_LENGTH} characters")
+    if problem := farmer_password_problem(new_password):
+        raise AppError(problem)
     if new_password == temporary:
         raise AppError("Choose a password different from the temporary one.")
     user.password_hash = hash_password(new_password)

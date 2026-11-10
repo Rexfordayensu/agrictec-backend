@@ -199,6 +199,17 @@ def list_announcements(ctx: allowed("announcements.send"), db: Database):
     return announcements.list_all(db)
 
 
+@router.get("/announcements/audience", tags=["Admin announcements"])
+def announcement_audience(ctx: allowed("announcements.send"), db: Database):
+    """Every registered farmer's region and crops, with no name or contact detail: enough for
+    the console to count an audience's reach without receiving anyone's personal data."""
+    return [
+        {"region": d.profile.region, "primaryCrops": list(d.profile.primary_crops)}
+        for d in load_farmers(db).values()
+        if not d.user.is_guest
+    ]
+
+
 @router.post("/announcements/reach", tags=["Admin announcements"])
 def estimate_reach(body: ReachQuery, ctx: allowed("announcements.send"), db: Database):
     """How many registered farmers an audience reaches today ("~23 farmers")."""
@@ -353,27 +364,28 @@ def system_status(ctx: allowed("overview.view"), db: Database):
 
 
 @router.post("/system/backup", tags=["Admin system"])
-def export_backup(ctx: allowed("data.manage"), db: Database):
-    """Every table except sign-ins, the team and the audit trail. No password hashes."""
-    return backup.export_all(db, ctx.admin)
+def export_backup(body: a.BackupExport, ctx: allowed("data.manage"), db: Database):
+    """Every table except sign-ins, the team and the audit trail, encrypted with the admin's
+    passphrase (AES-256-GCM, scrypt). No password hashes."""
+    return backup.export_all(db, ctx.admin, body.passphrase)
 
 
 @router.post("/system/backup/summary", tags=["Admin system"])
-def summarize_backup(body: dict, ctx: allowed("data.manage")):
-    """What a backup file holds, checked, before restoring it."""
-    return backup.summarize(body)
+def summarize_backup(body: a.BackupFile, ctx: allowed("data.manage")):
+    """What a backup file holds (decrypted with its passphrase), checked, before restoring it."""
+    return backup.summarize(body.backup, body.passphrase)
 
 
 @router.post("/system/restore", tags=["Admin system"])
 def restore_backup(body: a.BackupImport, ctx: allowed("data.manage"), db: Database):
-    """Replaces all platform and farmer data, all or nothing. Type RESTORE to confirm."""
-    return backup.import_all(db, ctx.admin, body.backup, body.confirmation)
+    """Replaces all platform and farmer data, all or nothing. Type RESTORE and your own password."""
+    return backup.import_all(db, ctx.admin, body.backup, body.confirmation, body.password, body.passphrase)
 
 
 @router.post("/system/reset-demo", tags=["Admin system"])
 def reset_demo(body: a.ResetDemo, ctx: allowed("data.manage"), db: Database):
-    """Type RESET to confirm."""
-    return backup.reset_demo(db, ctx.admin, body.confirmation)
+    """Type RESET and your own password. Refused in production."""
+    return backup.reset_demo(db, ctx.admin, body.confirmation, body.password)
 
 
 @router.post("/system/delete-farmers", tags=["Admin system"])

@@ -2,12 +2,13 @@
 Every query is scoped to the signed-in farmer: nobody reads or changes another farmer's data."""
 
 import secrets
+from datetime import timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as DB
 
 from app.core.errors import AppError, NotFound
-from app.domain.clock import now_utc
+from app.domain.clock import now_utc, today
 from app.domain.verification import normalize_phone
 from app.models import (
     Announcement,
@@ -61,8 +62,11 @@ def apply_profile_fields(row: Profile, data: f.ProfileFields) -> None:
     row.region = data.region
     row.constituency = data.constituency
     row.community = _text(data.community)
-    if data.gps is None and row.gps_lat is not None:
-        # Removing the map pin un-verifies the farm location.
+    moved = data.gps is not None and row.gps_lat is not None and (
+        abs(data.gps.lat - row.gps_lat) >= 0.00006 or abs(data.gps.lng - (row.gps_lng or 0)) >= 0.00006
+    )
+    if (data.gps is None and row.gps_lat is not None) or moved:
+        # Removing or moving the map pin un-verifies the farm location (an admin reviews it again).
         row.verified_location = False
     row.gps_lat = data.gps.lat if data.gps else None
     row.gps_lng = data.gps.lng if data.gps else None
@@ -102,7 +106,15 @@ def list_records(db: DB, user_id: str) -> list[f.FarmRecord]:
     return [mappers.record_out(r) for r in rows]
 
 
+def _check_date(value) -> None:
+    """An entry describes something that happened: at most a day ahead (time zones). A date in
+    the future would sit in the score's history window before it ever happened."""
+    if value is not None and value > today() + timedelta(days=1):
+        raise AppError("The date can't be in the future.")
+
+
 def create_record(db: DB, user_id: str, data: f.RecordInput) -> f.FarmRecord:
+    _check_date(data.date)
     row = FarmRecord(user_id=user_id, created_at=now_utc(), **_record_fields(data.model_dump()))
     db.add(row)
     db.commit()
@@ -119,6 +131,7 @@ def _record_fields(values: dict) -> dict:
 def update_record(db: DB, user_id: str, record_id: str, patch: f.RecordPatch) -> f.FarmRecord:
     row = _record(db, user_id, record_id)
     changes = patch.model_dump(exclude_unset=True)
+    _check_date(changes.get("date"))
     for key, value in _record_fields({"type": changes.get("type", row.type), **changes}).items():
         setattr(row, key, value)
     db.commit()
@@ -164,6 +177,7 @@ def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
 
 
 def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
+    _check_date(data.date)
     values = data.model_dump()
     values["reference"] = _reference(values["reference"])
     row = MomoTransaction(user_id=user_id, created_at=now_utc(), **values)
@@ -174,6 +188,7 @@ def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
 
 def update_momo(db: DB, user_id: str, momo_id: str, patch: f.MomoPatch) -> f.MomoTransaction:
     row = _momo(db, user_id, momo_id)
+    _check_date(patch.date)
     for key, value in patch.model_dump(exclude_unset=True).items():
         setattr(row, key, value.strip() if key == "reference" else value)
     db.commit()
@@ -242,29 +257,24 @@ def list_chat(db: DB, user_id: str) -> list[f.ChatMessage]:
     return [f.ChatMessage(id=r.id, role=r.role, content=r.content, created_at=r.created_at) for r in rows]
 
 
-def save_chat(db: DB, user_id: str, messages: list[f.ChatMessage], commit: bool = True) -> None:
-    """Replaces the conversation (the most recent messages are kept)."""
-    db.execute(delete(ChatMessage).where(ChatMessage.user_id == user_id))
-    db.flush()
-    kept = messages[-MAX_CHAT_MESSAGES:]
-    seen: set[str] = set()
-    for position, m in enumerate(kept):
-        if m.id in seen:
-            raise AppError("Each chat message needs its own ID.")
-        seen.add(m.id)
+def append_chat(db: DB, user_id: str, messages: list[f.ChatMessage]) -> None:
+    """Adds messages the API wrote (the assistant's question and answer) to the end of the
+    conversation, keeping the most recent MAX_CHAT_MESSAGES. Not committed: the caller commits
+    with the credit it spent. The browser never writes the conversation."""
+    last = db.scalar(select(func.max(ChatMessage.position)).where(ChatMessage.user_id == user_id))
+    position = -1 if last is None else last
+    for m in messages:
+        position += 1
         content = m.content if isinstance(m.content, str) else m.content.model_dump(by_alias=True, exclude_none=True)
         db.add(
             ChatMessage(
-                id=m.id,
-                user_id=user_id,
-                position=position,
-                role=m.role,
-                content=content,
-                created_at=m.created_at,
+                id=m.id, user_id=user_id, position=position, role=m.role, content=content, created_at=m.created_at
             )
         )
-    if commit:
-        db.commit()
+    db.flush()
+    cutoff = position - MAX_CHAT_MESSAGES
+    if cutoff >= 0:
+        db.execute(delete(ChatMessage).where(ChatMessage.user_id == user_id, ChatMessage.position <= cutoff))
 
 
 def clear_chat(db: DB, user_id: str) -> None:

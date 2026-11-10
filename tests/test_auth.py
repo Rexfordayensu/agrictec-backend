@@ -27,6 +27,8 @@ def test_duplicate_email_and_short_password():
     assert r.status_code == 409
     r = new_client().post(f"{API}/auth/signup", json={"email": "kofi@example.com", "password": "short"})
     assert r.status_code == 422
+    letters = new_client().post(f"{API}/auth/signup", json={"email": "kofi@example.com", "password": "onlyletters"})
+    assert letters.status_code == 400 and "number" in letters.json()["detail"]
 
 
 def test_bearer_token_works_without_cookies():
@@ -80,9 +82,33 @@ def test_admin_lockout_after_five_failures():
         assert r.status_code == 401 and f"{left} attempt" in r.json()["detail"]
     r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "wrong"})
     assert r.status_code == 423 and "Too many attempts" in r.json()["detail"]
+    assert r.json()["until"]  # for the sign-in page's countdown
     # Even the right password is refused while locked.
     r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
     assert r.status_code == 423
+    # There is no public endpoint telling anyone how many tries an email has left.
+    assert c.get(f"{API}/admin/auth/lockout", params={"email": "superadmin@agrictec.app"}).status_code in (404, 405)
+
+
+def test_a_strangers_failures_never_lock_the_admin_out(monkeypatch):
+    from app.config import get_settings
+
+    secret = "s" * 40
+    monkeypatch.setattr(get_settings(), "frontend_proxy_secret", secret)
+
+    def from_address(ip: str) -> dict:
+        return {"x-agrictec-proxy-secret": secret, "x-agrictec-client-ip": ip}
+
+    stranger = new_client()
+    for _ in range(5):
+        stranger.post(f"{API}/admin/auth/login", headers=from_address("203.0.113.9"),
+                      json={"email": "superadmin@agrictec.app", "password": "wrong"})
+    locked = stranger.post(f"{API}/admin/auth/login", headers=from_address("203.0.113.9"),
+                           json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert locked.status_code == 423
+    owner = new_client().post(f"{API}/admin/auth/login", headers=from_address("198.51.100.7"),
+                              json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert owner.status_code == 200
 
 
 def test_admin_idle_timeout_signs_out_and_is_logged(db):
@@ -103,3 +129,18 @@ def test_signing_out_of_one_side_keeps_the_other():
     assert r.status_code == 200
     assert c.post(f"{API}/admin/auth/logout").status_code == 200
     assert c.get(f"{API}/auth/session").status_code == 200
+
+
+def test_a_farmer_unused_for_a_week_is_signed_out(db):
+    c = signup()
+    assert c.get(f"{API}/auth/session").status_code == 200
+    db.execute(
+        update(AuthSession)
+        .where(AuthSession.kind == "farmer")
+        .values(last_activity_at=AuthSession.last_activity_at - timedelta(days=8))
+    )
+    db.commit()
+    r = c.get(f"{API}/auth/session")
+    assert r.status_code == 401 and r.json()["code"] == "session_expired"
+    # Ended for good: it doesn't come back.
+    assert c.get(f"{API}/auth/session").status_code == 401

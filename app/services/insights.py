@@ -53,6 +53,7 @@ def overview(db: DB, admin: Admin, date_range: str) -> dict:
         "loanFunnel": analytics.loan_funnel(apps),
         "farmersByRegion": analytics.farmers_by_region(farmers),
         "cropPopularity": analytics.crop_popularity(farmers),
+        "cropGrowers": sum(1 for f in analytics.registered(farmers) if f.profile.primary_crops),
         "scoreDistribution": analytics.score_distribution(farmers, config.bands),
         "needsAttention": analytics.needs_attention(
             farmers=farmers, apps=apps, flags=flags, verifications=verifications,

@@ -13,8 +13,10 @@ from pydantic import ValidationError
 from sqlalchemy import Date, DateTime, Numeric, delete, func, insert, select, text
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
+from app.core import backup_crypto
 from app.core.audit import append_audit
-from app.core.errors import AppError
+from app.core.errors import AppError, Forbidden
 from app.core.events import bus
 from app.core.security import verify_password
 from app.domain.clock import iso, now_utc, parse_iso
@@ -123,7 +125,11 @@ def counts(db: DB) -> dict[str, int]:
     }
 
 
-def export_all(db: DB, actor: Admin) -> dict:
+def export_all(db: DB, actor: Admin, passphrase: str) -> dict:
+    """The whole platform, encrypted with the admin's passphrase (app/core/backup_crypto.py)."""
+    problem = backup_crypto.passphrase_problem(passphrase)
+    if problem:
+        raise AppError(problem)
     data = {}
     for model in TABLES:
         columns = _columns(model)
@@ -132,10 +138,24 @@ def export_all(db: DB, actor: Admin) -> dict:
     total = sum(len(rows) for rows in data.values())
     append_audit(
         db, actor, action="system.export", target_type="system",
-        summary=f"Exported a platform backup ({len(data)} tables, {total} rows)", after={"tables": len(data), "rows": total},
+        summary=f"Exported an encrypted platform backup ({len(data)} tables, {total} rows)",
+        after={"tables": len(data), "rows": total},
     )
+    exported_at = iso(now_utc())
+    payload = {
+        "app": "agrictec", "kind": "platform-backup", "version": BACKUP_VERSION, "exportedAt": exported_at, "data": data,
+    }
+    envelope = backup_crypto.encrypt(payload, passphrase, exported_at)
     db.commit()
-    return {"app": "agrictec", "kind": "platform-backup", "version": BACKUP_VERSION, "exportedAt": iso(now_utc()), "data": data}
+    return envelope
+
+
+def open_backup(document: dict, passphrase: str = "") -> dict:
+    """The backup inside a file: decrypted with its passphrase, or, for a file made before backups
+    were encrypted, as it is."""
+    if backup_crypto.is_encrypted(document):
+        return backup_crypto.decrypt(document, passphrase)
+    return document
 
 
 def _parse(backup: dict) -> dict[str, list[dict]]:
@@ -183,8 +203,9 @@ def _check_documents(parsed: dict[str, list[dict]]) -> None:
         raise AppError(f"The backup's settings are invalid: {error}") from error
 
 
-def summarize(backup: dict) -> dict:
+def summarize(document: dict, passphrase: str = "") -> dict:
     """What a backup holds, shown before restoring ("60 farmers, 25 applications...")."""
+    backup = open_backup(document, passphrase)
     parsed = _parse(backup)
     size = {name: len(rows) for name, rows in parsed.items()}
     return {
@@ -201,10 +222,14 @@ def summarize(backup: dict) -> dict:
     }
 
 
-def import_all(db: DB, actor: Admin, backup: dict, confirmation: str) -> dict:
+def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password: str, passphrase: str = "") -> dict:
+    """Replaces everything: needs the phrase and the admin's own password (like deleting every
+    farmer), so an unattended or stolen session can't wipe the platform."""
     if confirmation != IMPORT_CONFIRMATION:
         raise AppError(f"Type {IMPORT_CONFIRMATION} to confirm the import.")
-    parsed = _parse(backup)
+    if not verify_password(password, actor.password_hash):
+        raise AppError("That password is not correct.")
+    parsed = _parse(open_backup(document, passphrase))
     before = counts(db)
     passwords = dict(db.execute(select(User.id, User.password_hash)).all())
     for user in parsed.get("users", []):
@@ -245,11 +270,16 @@ def delete_all_farmers(db: DB, actor: Admin, confirmation: str, password: str) -
     return {"farmers": before["farmers"]}
 
 
-def reset_demo(db: DB, actor: Admin, confirmation: str) -> dict:
+def reset_demo(db: DB, actor: Admin, confirmation: str, password: str) -> dict:
     """Rebuilds the seeded demo world and the default settings and content. Real accounts, the
-    team and the audit trail are kept."""
+    team and the audit trail are kept. Never in production (it would add made-up farmers to the
+    live platform), and it needs the admin's own password."""
+    if get_settings().environment == "production":
+        raise Forbidden("The demo data can't be reset on the live platform.", code="production")
     if confirmation != RESET_CONFIRMATION:
         raise AppError(f"Type {RESET_CONFIRMATION} to confirm the reset.")
+    if not verify_password(password, actor.password_hash):
+        raise AppError("That password is not correct.")
     before = counts(db)
     seed.clear_seed_data(db)
     db.execute(delete(PlatformSetting))
@@ -301,13 +331,12 @@ def _bootstrap_lock(db: DB) -> None:
 
 
 def bootstrap(db: DB, *, seed_demo_data: bool) -> None:
-    """At startup: the first credit rules, the default lenders and the super admin; then the
-    demo world when asked for and never seeded."""
+    """At startup: the first credit rules and the super admin; then the demo world (with its
+    sample lenders) when asked for and never seeded. A live platform starts with no lenders:
+    admins add the real ones, with their real terms (Lenders page)."""
     _bootstrap_lock(db)
     if not db.scalar(select(func.count()).select_from(CreditConfigVersion)):
         insert_default_credit_config(db)
-    if not db.scalar(select(func.count()).select_from(Lender)):
-        reset_default_lenders(db)
     seed.ensure_super_admin(db)
     db.commit()
     if seed_demo_data:

@@ -115,8 +115,8 @@ def restore_credit_version(db: DB, actor: Admin, version: int, note: str | None)
     return saved
 
 
-def scoring_inputs(db: DB) -> list[ScoringInput]:
-    """What the score needs for every registered farmer."""
+def scoring_inputs(db: DB, user_ids: list[str] | None = None) -> list[ScoringInput]:
+    """What the score needs for every registered farmer (or just those named)."""
     return [
         ScoringInput(
             user_id=uid,
@@ -126,7 +126,7 @@ def scoring_inputs(db: DB) -> list[ScoringInput]:
             momo=d.momo,
             profile=d.profile,
         )
-        for uid, d in load_farmers(db).items()
+        for uid, d in load_farmers(db, user_ids).items()
         if not d.user.is_guest
     ]
 

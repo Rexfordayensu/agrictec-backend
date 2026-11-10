@@ -1,7 +1,7 @@
 # AgriCtec API
 
 The backend for the AgriCtec Next.js app, which lives in its own repository (clone the two side by
-side; the app's `deploy/` folder builds this one from `../../agrictec-backend`). It's built with
+side; the app's `deploy/` folder builds this one from `../../backend`). It's built with
 **FastAPI**, **PostgreSQL** (via SQLAlchemy 2 and Alembic) and **Python 3.12+**. It owns every piece
 of data the browser used to keep in localStorage. It authenticates every request with httpOnly
 sessions, hashes passwords with argon2, and enforces the admin role matrix on the server. It
@@ -195,30 +195,30 @@ can see them for its redirects. To serve the API on another origin instead, set
 | -------------------------------------------------------- | ------------------------------------------------------------------- |
 | `auth.service`                                           | `POST /auth/signup`, `/auth/login`, `/auth/guest`, `/auth/logout`, `/auth/replace-temporary-password`, `/auth/password-reset/request`, `/auth/password-reset/confirm`, `GET /auth/session` |
 | `profile.service`, `onboarding.service`                  | `GET/PUT /me/profile`, `GET/PUT/DELETE /me/onboarding/draft`, `POST /me/onboarding/complete` |
-| `records.service`, `momo.service`                        | `GET/POST/PUT /me/records`, `PATCH/DELETE /me/records/{id}`. The same under `/me/momo` |
-| `diagnoses.service`, `chat.service`, `settings.service`  | `/me/diagnoses`, `/me/chat`, `/me/settings`                         |
+| `records.service`, `momo.service`                        | `GET/POST/DELETE /me/records` (DELETE clears all), `PATCH/DELETE /me/records/{id}`. The same under `/me/momo` |
+| `diagnoses.service`, `chat.service`, `settings.service`  | `GET/DELETE /me/diagnoses`, `GET/DELETE /me/chat` (both written by the API only: `POST /me/crop-doctor` and `POST /me/assistant` save them), `/me/settings` |
 | `loans.service`                                          | `GET/POST /me/loans/applications`, `POST /me/loans/eligibility`, `GET /platform/lenders` |
-| `platform.service`                                       | `GET /platform` (one snapshot), `GET /me/announcements`, `POST /me/announcements/{id}/dismiss`, `GET/POST /me/verifications` |
+| `platform.service`                                       | `GET /platform` (one snapshot), `GET /me/announcements`, `POST /me/announcements/{id}/dismiss`, `GET/POST /me/verifications` (a phone needs `code`, texted by `POST /me/phone/code`; a farm pin and a Ghana Card wait for review) |
 | `subscription.service`                                   | `GET/POST /me/subscription`, `POST /me/subscription/checkout`, `/me/subscription/confirm`. Credits are spent by `POST /me/assistant` and `POST /me/crop-doctor` |
 | `notifications.service` (top-bar bell)                   | `GET /me/notifications`, `POST /me/notifications/read`              |
 | `use-farm-stats` (score, readiness)                      | `GET /me/credit`                                                    |
 | `lib/ai/*`, yield predictor                              | `POST /me/assistant`, `POST /me/crop-doctor` (multipart), `POST /me/yield` |
 | `lib/data/backup.ts`                                     | `GET /me/export`, `POST /me/import`, `POST /me/delete-data`         |
 | `market.service`, `weather.service`, `geocoding.service` | `GET /platform/market/prices`, `/platform/market/trends`, `POST /platform/weather`, `/platform/market/research`, `GET /geocoding/search?q=` |
-| `admin-auth.service`                                     | `POST /admin/auth/login`, `/logout`, `/touch`, `/change-password`, `PATCH /admin/auth/me`, `GET /admin/auth/session`, `GET /admin/auth/lockout` |
-| overview (`lib/admin/overview.ts`)                       | `GET /admin/overview?range=30d\|90d\|12m\|all` (includes the badge counts) |
-| `farmers.service`                                        | `GET /admin/farmers`, `/admin/farmers/{id}`, `/{id}/detail`, and `POST` `/{id}/suspend`, `/reactivate`, `/delete`, `/notes`, `/reset-password`, `PUT /{id}/tags`, CSV exports |
+| `admin-auth.service`                                     | `POST /admin/auth/login`, `/logout`, `/touch`, `/change-password`, `PATCH /admin/auth/me`, `GET /admin/auth/session` (a lockout answers the sign-in with 423 and `until`) |
+| `overview.service` (the console home)                   | `GET /admin/overview?range=30d|90d|12m|all`: every figure and chart, computed here (the console never downloads every farmer) ||90d\|12m\|all` (includes the badge counts) |
+| `farmers.service`                                        | `GET /admin/farmers/page` (search, filters, sort and paging done here; `ids=1` for exports), `POST /admin/farmers/lookup` (only the farmers a queue names), `GET /admin/farmers/{id}`, `/{id}/detail`, and `POST` `/{id}/suspend`, `/reactivate`, `/delete`, `/notes`, `/reset-password`, `PUT /{id}/tags`, CSV exports |
 | `verifications.service`                                  | `GET /admin/verifications`, `POST /{id}/approve`, `/{id}/reject`, `/approve-many` |
 | `loan-applications.service`                              | `GET /admin/loan-applications` (filters), `GET /{id}`, `/{id}/review`, `POST /{id}/status`, `/export` |
 | `lenders.service`                                        | `GET/POST /admin/lenders`, `PATCH/DELETE /{id}`, `POST /{id}/toggle` |
-| `config.service`                                         | `PUT /admin/credit-config`, `POST /publish`, `/restore`, `/impact`, `GET /history`, `PUT /admin/settings/flags`, `/plans` |
+| `config.service`                                         | `PUT /admin/credit-config`, `POST /publish`, `/restore`, `/impact` (every farmer re-scored here), `GET /history`, `GET /scoring-inputs/{userId}` (one farmer, for the simulator), `PUT /admin/settings/flags`, `/plans` |
 | `content.service`                                        | `GET/PUT /admin/content/market\|crops\|assistant\|diagnoses`, `PUT /weather-override`, `GET /meta`, `POST /assistant/test` |
-| `announcements.service`                                  | `GET/POST /admin/announcements`, `PATCH/DELETE /{id}`, `POST /{id}/end`, `/reach` |
+| `announcements.service`                                  | `GET/POST /admin/announcements`, `PATCH/DELETE /{id}`, `POST /{id}/end`, `/reach`, `GET /admin/announcements/audience` (regions and crops only, to count reach) |
 | `risk.service`                                           | `POST /admin/risk/scan`, `GET /admin/risk/flags`, `/{id}/related`, `POST /{id}/dismiss`, `/{id}/confirm`, `GET /admin/risk/rules` |
 | `team.service`                                           | `GET/POST /admin/team`, `POST /{id}/role`, `/disable`, `/enable`, `/reset-password`, `GET /admin/roles` |
 | `audit.service`                                          | `GET /admin/audit` (filters + paging), `/audit/actors`, `POST /audit/export` |
 | `reports.service`                                        | `GET /admin/reports`, `/admin/reports/{id}`, `POST /{id}/export?format=csv\|pdf`, `/builder/preview`, `/builder/export`; schedules: `GET/POST /admin/reports/schedules`, `PATCH/DELETE /schedules/{id}` |
-| `backup.service`, system status                          | `POST /admin/system/backup`, `/backup/summary`, `/restore`, `/reset-demo`, `/delete-farmers`, `GET /admin/system/status` |
+| `backup.service`, system status                          | `POST /admin/system/backup` (encrypted with the admin's passphrase: AES-256-GCM, key by scrypt; never stored), `/backup/summary` and `/restore` (need that passphrase), `/reset-demo`, `/delete-farmers`, `GET /admin/system/status` |
 | market research (admin)                                  | `POST /admin/content/market/research`                               |
 | Paystack (server to server)                              | `POST /payments/paystack/webhook` (signature checked)               |
 | `impersonation.ts`                                       | `POST /admin/farmers/{id}/impersonate`, then `POST /auth/impersonation/claim` in the new tab, sending `X-Impersonation-Token` on its requests; `POST /auth/impersonation/end` |
@@ -271,7 +271,9 @@ can see them for its redirects. To serve the API on another origin instead, set
 - **CSV exports** neutralize spreadsheet formulas. Backups never contain password hashes.
 - **Rate limits** are counted per client IP in PostgreSQL, so they hold across workers:
   - sign-up 10 per hour, farmer sign-in 20 per 15 minutes, guest 10 per hour
-  - admin sign-in 30 per 15 minutes, on top of the per-email lockout
+  - admin sign-in 30 per 15 minutes, on top of the lockout (five failures lock an email from that
+    address for five minutes, so nobody else can lock a real admin out)
+  - phone codes 5 per 10 minutes (and 5 per account a day)
   - assistant 30, crop doctor 10, weather 60 and place search 30 per minute
   `X-Forwarded-For` is believed only from `TRUSTED_PROXIES`, and it is read from the right. The
   first entry that isn't a trusted proxy is used, because entries to its left can be made up by
@@ -354,8 +356,8 @@ Keep these points in mind:
   - **Cost.** Each question or scan is one paid API request. Claude Opus 5.5 costs $4 / $20 per
     million input and output tokens. `ANTHROPIC_MODEL=claude-sonnet-5-5` or
     `claude-haiku-5-5` costs less, if their answers are good enough for you.
-  - **Without a key,** everything works as before, and the crop doctor says its results are a
-    demonstration.
+  - **Without a key,** the assistant answers from the knowledge base and the crop doctor is
+    unavailable: it never makes up a diagnosis.
 - **Scheduled reports** go out every Monday or every 1st of the month at 07:00 Ghana time, with
   the report's CSV attached (PDFs are drawn in the browser, so they can't be emailed).
   - A background thread in each worker checks every minute. It claims due rows with

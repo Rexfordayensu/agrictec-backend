@@ -7,6 +7,7 @@ from datetime import timedelta
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
 from app.core.errors import (
     READ_ONLY_MESSAGE,
     SESSION_ENDED,
@@ -92,12 +93,21 @@ def farmer_context(request: Request, db: DB = Depends(get_db)) -> FarmerContext:
         end_session(record, now)
         db.commit()
         raise Forbidden(SUSPENDED_MESSAGE, code="account_suspended")
+    # Unused for FARMER_IDLE_DAYS: signed out, so a shared or lost phone doesn't stay signed in.
+    if now - record.last_activity_at >= timedelta(days=max(1, get_settings().farmer_idle_days)):
+        end_session(record, now)
+        db.commit()
+        raise Unauthorized(SESSION_ENDED, code="session_expired")
     flags = platform_store.flags(db)
     if flags.maintenance_mode:
         raise AppError(flags.maintenance_message, code="maintenance", status_code=503)
-    # "Last active" for the admin, written at most once a minute.
-    if not user.last_active_at or now - user.last_active_at >= ACTIVITY_INTERVAL:
-        user.last_active_at = now
+    # "Last active" for the admin, and this session's own activity (the idle timeout), each
+    # written at most once a minute.
+    stale_user = not user.last_active_at or now - user.last_active_at >= ACTIVITY_INTERVAL
+    stale_session = now - record.last_activity_at >= ACTIVITY_INTERVAL
+    if stale_user or stale_session:
+        if stale_user:
+            user.last_active_at = now
         record.last_activity_at = now
         db.commit()
     return FarmerContext(user=user, session=record)

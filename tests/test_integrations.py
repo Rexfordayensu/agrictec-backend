@@ -479,7 +479,7 @@ def test_admin_decisions_reach_the_farmers_inbox_and_sms(settings, monkeypatch):
     farmer = signup()
     farmer.post(f"{API}/me/onboarding/complete", json={**ONBOARDING, "ghanaCard": {"cardNumber": "GHA-123456789-0"}})
     boss = super_admin()
-    pending = boss.get(f"{API}/admin/verifications", params={"status": "pending"}).json()[0]
+    pending = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     boss.post(f"{API}/admin/verifications/{pending['id']}/approve")
     inbox = farmer.get(f"{API}/me/notifications").json()
     assert inbox["unread"] == 1 and inbox["items"][0]["title"] == "Your Ghana Card is verified"
@@ -557,7 +557,7 @@ def test_identity_checks_are_advice_for_reviewers_only(settings, monkeypatch):
     assert mine["identityCheck"] is None  # farmers never see it
     assert seen["id_type"] == "GHANA_CARD" and seen["country"] == "GH" and seen["first_name"] == "Ama"
     assert seen["signature"] == identity.signature("secret", "1234", seen["timestamp"])
-    review = super_admin().get(f"{API}/admin/verifications", params={"status": "pending"}).json()[0]
+    review = super_admin().get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     assert review["identityCheck"]["result"] == "verified" and review["identityCheck"]["names"] == "Exact Match"
     assert "123456789" not in json.dumps(review)
 
@@ -625,7 +625,6 @@ def test_workers_starting_together_bootstrap_once():
     from sqlalchemy import func, select, text
 
     from app.db import Base, SessionLocal, engine
-    from app.domain.defaults import DEFAULT_LENDERS
     from app.models import Admin, CreditConfigVersion, Lender
     from app.services.backup import bootstrap
 
@@ -653,5 +652,6 @@ def test_workers_starting_together_bootstrap_once():
     assert errors == []
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(CreditConfigVersion)) == 1
-        assert db.scalar(select(func.count()).select_from(Lender)) == len(DEFAULT_LENDERS)
+        # A live platform starts with no lenders (only the demo world brings sample ones).
+        assert db.scalar(select(func.count()).select_from(Lender)) == 0
         assert db.scalar(select(func.count()).select_from(Admin)) == 1

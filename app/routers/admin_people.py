@@ -60,6 +60,43 @@ def list_farmers(
     return admin_farmers.list_farmers(db, search=search, region=region, status=status, tag=tag, include_guests=include_guests)
 
 
+@router.get("/farmers/page", tags=["Admin farmers"])
+def farmers_page(
+    ctx: allowed("farmers.view"),
+    db: Database,
+    q: Annotated[str | None, Query(max_length=120)] = None,
+    region: Annotated[str | None, Query(max_length=400)] = None,
+    crop: Annotated[str | None, Query(max_length=400)] = None,
+    status: Literal["active", "suspended", "pending_verification"] | None = None,
+    band: Annotated[str | None, Query(max_length=60)] = None,
+    verification: Literal["full", "no-card", "no-phone"] | None = None,
+    joined_from: Annotated[str | None, Query(alias="joinedFrom", pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    joined_to: Annotated[str | None, Query(alias="joinedTo", pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    records: Literal["yes", "no"] | None = None,
+    tag: Annotated[str | None, Query(max_length=40)] = None,
+    active: Annotated[str | None, Query(pattern=r"^\d{1,4}$")] = None,
+    sort: Literal["farmer", "region", "crops", "score", "records", "income", "verified", "status", "joined"] = "joined",
+    direction: Annotated[Literal["asc", "desc"] | None, Query(alias="dir")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize", ge=1, le=admin_farmers.PAGE_SIZE_MAX)] = 25,
+    ids: Literal["1"] | None = None,
+):
+    """One page of the farmers list, searched, filtered and sorted here (guests left out), with
+    the status counts and the filter options. `ids=1` adds every matching ID (for exports)."""
+    params = {
+        "q": q, "region": region, "crop": crop, "status": status, "band": band, "verification": verification,
+        "joinedFrom": joined_from, "joinedTo": joined_to, "records": records, "tag": tag, "active": active,
+        "sort": sort, "dir": direction, "ids": ids,
+    }
+    return admin_farmers.page_farmers(db, params, page, page_size)
+
+
+@router.post("/farmers/lookup", response_model=list[a.FarmerAccount], tags=["Admin farmers"])
+def lookup_farmers(body: a.IdList, ctx: allowed("farmers.view"), db: Database):
+    """Only the farmers named (at most 500): the ones behind the queues the console shows."""
+    return admin_farmers.lookup_farmers(db, body.ids or [])
+
+
 @router.post("/farmers/export", tags=["Admin farmers"])
 def export_farmers(body: a.IdList, ctx: allowed("reports.export"), db: Database):
     """CSV of the given farmers (or all). Never a password hash or Ghana Card digits."""

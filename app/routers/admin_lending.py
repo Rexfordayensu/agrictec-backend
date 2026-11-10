@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, require
+from app.core.errors import NotFound
 from app.db import get_db
 from app.domain.loans import lender_stats
 from app.models import LoanApplication
@@ -139,6 +140,24 @@ def scoring_inputs(ctx: allowed("credit.configure"), db: Database):
         }
         for i in admin_config.scoring_inputs(db)
     ]
+
+
+@router.get("/credit-config/scoring-inputs/{user_id}", tags=["Admin credit rules"])
+def scoring_input(user_id: str, ctx: allowed("credit.configure"), db: Database):
+    """What the score needs for ONE farmer: the simulator tries the draft on them (the impact
+    on everyone is worked out here, by POST /credit-config/impact)."""
+    found = admin_config.scoring_inputs(db, [user_id])
+    if not found:
+        raise NotFound("Farmer not found.")
+    i = found[0]
+    return {
+        "userId": i.user_id,
+        "name": i.name,
+        "region": i.region,
+        "records": [r.model_dump(mode="json", by_alias=True) for r in i.records],
+        "momo": [t.model_dump(mode="json", by_alias=True) for t in i.momo],
+        "profile": i.profile.model_dump(mode="json", by_alias=True),
+    }
 
 
 @router.put("/credit-config", response_model=CreditConfig, tags=["Admin credit rules"])

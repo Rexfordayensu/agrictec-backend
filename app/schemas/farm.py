@@ -182,12 +182,10 @@ class OnboardingProfile(ProfileFields):
 
 
 class OnboardingCardChoice(CamelModel):
-    """Step 6. Either the full number (hashed and masked here, never stored) or, from a draft
-    saved by the browser, the mask and fingerprint it already computed."""
+    """Step 6: the full number, masked and fingerprinted here (never stored). A fingerprint made
+    by the browser is never accepted: it could be made up to dodge the duplicate check."""
 
-    card_number: str | None = None
-    masked: str | None = None
-    hash: Annotated[str | None, Field(pattern=r"^[\w-]{8,128}$")] = None
+    card_number: Annotated[str | None, Field(max_length=20)] = None
 
 
 class OnboardingComplete(CamelModel):
@@ -426,6 +424,13 @@ class VerificationSubmit(CamelModel):
     kind: VerificationKind
     # A phone number, "lat, lng" for a location, or a full Ghana Card number.
     value: Annotated[str, Field(min_length=1, max_length=120)]
+    # For a phone: the six-digit code texted to it (POST /me/phone/code).
+    code: Annotated[str | None, Field(max_length=12)] = None
+
+
+class PhoneCodeSent(CamelModel):
+    sent_to: str
+    expires_in_minutes: int
 
 
 # ---------- AI tools ----------
@@ -459,6 +464,8 @@ class AssistantAnswer(CamelModel):
     credits_remaining: int | None
     # "ai" when Claude wrote the reply, "rules" for the admin's knowledge base.
     source: Literal["ai", "rules"] = "rules"
+    # The question and the reply as saved to the conversation (by the API, never the browser).
+    messages: list[ChatMessage] = []
 
 
 class DiagnosisResultOut(CamelModel):
@@ -474,6 +481,8 @@ class DiagnosisResultOut(CamelModel):
 class DiagnosisAnswer(CamelModel):
     result: DiagnosisResultOut
     credits_remaining: int | None
+    # The diagnosis as saved to the farmer's history (with a thumbnail made by the API).
+    diagnosis: Diagnosis | None = None
 
 
 # ---------- Subscriptions ----------
@@ -550,7 +559,9 @@ class DataImport(CamelModel):
     profile: dict[str, Any]
     records: Annotated[list[RecordInput], Field(max_length=10_000)]
     momo: Annotated[list[MomoInput], Field(max_length=10_000)]
-    diagnoses: Annotated[list[DiagnosisInput], Field(max_length=10)] = []
-    chat: Annotated[list[ChatMessage], Field(max_length=500)] = []
+    # Accepted for older files but never restored: diagnoses and the conversation are written by
+    # the API only (Claude reads the conversation back), so a file can't plant them.
+    diagnoses: Annotated[list[dict[str, Any]], Field(max_length=10)] = []
+    chat: Annotated[list[dict[str, Any]], Field(max_length=500)] = []
     settings: AppSettings = AppSettings()
 

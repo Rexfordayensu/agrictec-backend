@@ -2,11 +2,11 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, admin_context
-from app.core.ratelimit import rate_limit
+from app.core.ratelimit import client_ip, rate_limit
 from app.db import get_db
 from app.routers.common import clear_admin_cookies, set_admin_cookies
 from app.schemas import admin as a
@@ -20,17 +20,13 @@ Signed = Annotated[AdminContext, Depends(admin_context)]
 
 
 @router.post("/login", response_model=a.AdminSignedIn, dependencies=[Depends(rate_limit("admin-login", 30, 900))])
-def sign_in(body: Credentials, response: Response, db: Database):
-    """Five failed attempts lock the email for five minutes (423). An admin on a temporary
-    password signs in with mustChangePassword true and can only change it."""
-    token, session = admin_auth.sign_in(db, body.email, body.password)
+def sign_in(body: Credentials, request: Request, response: Response, db: Database):
+    """Five failed attempts from one address lock that email there for five minutes (423, with
+    `until`). An admin on a temporary password signs in with mustChangePassword true and can only
+    change it."""
+    token, session = admin_auth.sign_in(db, body.email, body.password, client_ip(request))
     set_admin_cookies(response, token, session.admin.role)
     return a.AdminSignedIn(session=session, token=token)
-
-
-@router.get("/lockout", response_model=a.LockStatus)
-def lockout(email: Annotated[str, Query(min_length=3, max_length=254)], db: Database):
-    return admin_auth.lock_status(db, email)
 
 
 @router.get("/session", response_model=a.AdminSession)

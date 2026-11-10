@@ -347,9 +347,23 @@ class BuilderResult(CamelModel):
 # ---------- System ----------
 
 
+class BackupExport(CamelModel):
+    # Encrypts the file (12+ characters). Never stored: without it the backup can't be opened.
+    passphrase: Annotated[str, Field(max_length=1000)]
+
+
+class BackupFile(CamelModel):
+    backup: dict[str, Any]
+    # The passphrase it was encrypted with (empty only for a file made before encryption).
+    passphrase: Annotated[str, Field(max_length=1000)] = ""
+
+
 class BackupImport(CamelModel):
     backup: dict[str, Any]
     confirmation: str
+    passphrase: Annotated[str, Field(max_length=1000)] = ""
+    # The admin's own password: a restore replaces everything.
+    password: Annotated[str, Field(max_length=200)] = ""
 
 
 class DeleteAllFarmers(CamelModel):
@@ -359,6 +373,7 @@ class DeleteAllFarmers(CamelModel):
 
 class ResetDemo(CamelModel):
     confirmation: str
+    password: Annotated[str, Field(max_length=200)] = ""
 
 
 class DeleteFarmer(CamelModel):

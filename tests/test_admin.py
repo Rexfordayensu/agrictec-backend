@@ -1,10 +1,22 @@
 """The admin console: roles, the audit trail, and every workflow's rules."""
 
+import json
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from tests.conftest import API, ONBOARDING, admin_with_role, audit_count, new_client, signup, super_admin
+from app.services.backup import open_backup
+from tests.conftest import (
+    ADMIN_PASSWORD,
+    API,
+    ONBOARDING,
+    admin_with_role,
+    audit_count,
+    new_client,
+    signup,
+    super_admin,
+)
 
 LOAN = {"partnerId": "sinapi", "amount": 1000, "purpose": "Farm Equipment", "months": 12}
 
@@ -77,7 +89,7 @@ def test_audit_entries_never_hold_secrets():
     assert r.status_code == 409 and r.json()["code"] == "password_change_required"
     r = new_client().post(
         f"{API}/auth/replace-temporary-password",
-        json={"email": "ama@example.com", "temporaryPassword": temp, "newPassword": "brand-new-pass"},
+        json={"email": "ama@example.com", "temporaryPassword": temp, "newPassword": "brand-new-pass-1"},
     )
     assert r.status_code == 200
 
@@ -86,7 +98,7 @@ def test_ghana_card_review_flow():
     boss = super_admin()
     farmer = signup()
     farmer.post(f"{API}/me/onboarding/complete", json={**ONBOARDING, "ghanaCard": {"cardNumber": "GHA-111111111-1"}})
-    request = boss.get(f"{API}/admin/verifications", params={"status": "pending"}).json()[0]
+    request = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     assert boss.post(f"{API}/admin/verifications/approve-many", json={"ids": [request["id"]]}).status_code == 400
     r = boss.post(f"{API}/admin/verifications/{request['id']}/reject", json={"reason": "Other"})
     assert r.status_code == 400 and "note" in r.json()["detail"]
@@ -100,7 +112,7 @@ def test_ghana_card_review_flow():
 
 def test_loan_pipeline_with_the_demo_world():
     boss = super_admin()
-    reset = boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET"})
+    reset = boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
     assert reset.status_code == 200 and reset.json()["farmers"] == 60
     apps = boss.get(f"{API}/admin/loan-applications", params={"status": "submitted"}).json()
     app = apps[0]
@@ -175,7 +187,7 @@ def test_view_as_farmer_is_read_only_and_audited(db):
 
 def test_deleting_a_farmer_keeps_their_loan_history(db):
     boss = super_admin()
-    boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET"})
+    boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
     app = boss.get(f"{API}/admin/loan-applications").json()[0]
     farmer = boss.get(f"{API}/admin/farmers/{app['userId']}").json()
     assert boss.post(f"{API}/admin/farmers/{app['userId']}/delete", json={"confirmation": "someone else"}).status_code == 400
@@ -189,7 +201,7 @@ def test_deleting_a_farmer_keeps_their_loan_history(db):
 
 def test_reports_risk_and_backup_round_trip():
     boss = super_admin()
-    boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET"})
+    boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
     for report in ("platform", "regions", "loans", "credit", "verifications", "risk"):
         assert boss.get(f"{API}/admin/reports/{report}").status_code == 200, report
     csv = boss.post(f"{API}/admin/reports/regions/export", params={"format": "csv"})
@@ -206,16 +218,62 @@ def test_reports_risk_and_backup_round_trip():
     assert confirmed["status"] == "confirmed"
     assert boss.get(f"{API}/admin/farmers/{flags[0]['userId']}").json()["status"] == "suspended"
 
-    backup = boss.post(f"{API}/admin/system/backup").json()
-    assert "password_hash" not in str(backup["data"]["users"][0])
-    summary = boss.post(f"{API}/admin/system/backup/summary", json=backup).json()
+    # The file is encrypted with a passphrase the admin picks (never stored on the server).
+    assert boss.post(f"{API}/admin/system/backup", json={"passphrase": "short"}).status_code == 400
+    secret = "correct horse battery staple"
+    backup = boss.post(f"{API}/admin/system/backup", json={"passphrase": secret}).json()
+    assert backup["kind"] == "platform-backup-encrypted" and "data" not in backup
+    assert "@" not in json.dumps(backup)  # no email address readable in the file
+    inside = open_backup(backup, secret)
+    assert "password_hash" not in str(inside["data"]["users"][0])
+    wrong = boss.post(f"{API}/admin/system/backup/summary", json={"backup": backup, "passphrase": "not the passphrase"})
+    assert wrong.status_code == 400 and wrong.json()["code"] == "wrong_passphrase"
+    summary = boss.post(f"{API}/admin/system/backup/summary", json={"backup": backup, "passphrase": secret}).json()
     assert summary["farmers"] == 60
+    # A changed file is refused rather than restored.
+    first = "B" if backup["ciphertext"][0] == "A" else "A"
+    tampered = {**backup, "ciphertext": first + backup["ciphertext"][1:]}
+    assert boss.post(f"{API}/admin/system/backup/summary", json={"backup": tampered, "passphrase": secret}).status_code == 400
     boss.post(f"{API}/admin/system/delete-farmers", json={"confirmation": "DELETE ALL FARMERS", "password": "Sup3r$ecret!"})
     assert boss.get(f"{API}/admin/farmers").json() == []
-    assert boss.post(f"{API}/admin/system/restore", json={"backup": backup, "confirmation": "nope"}).status_code == 400
-    restored = boss.post(f"{API}/admin/system/restore", json={"backup": backup, "confirmation": "RESTORE"})
+    assert boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "nope", "password": ADMIN_PASSWORD}).status_code == 400
+    # A restore replaces everything: the phrase alone is not enough.
+    assert boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "RESTORE"}).status_code == 400
+    assert boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": "wrong"}).status_code == 400
+    restored = boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "RESTORE", "password": ADMIN_PASSWORD})
     assert restored.status_code == 200, restored.text
     assert len(boss.get(f"{API}/admin/farmers").json()) == 60
     # Restored accounts keep the password they have on this server (none here, until a reset).
-    r = new_client().post(f"{API}/auth/login", json={"email": backup["data"]["users"][0]["email"], "password": "Farmer@2026"})
+    r = new_client().post(f"{API}/auth/login", json={"email": inside["data"]["users"][0]["email"], "password": "Farmer@2026"})
     assert r.status_code == 401
+
+
+def test_the_farmers_list_is_searched_filtered_sorted_and_paged_on_the_server():
+    boss = super_admin()
+    boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
+    page = f"{API}/admin/farmers/page"
+    first = boss.get(page, params={"pageSize": 10}).json()
+    assert len(first["items"]) == 10 and first["total"] == 60 and first["pageCount"] == 6
+    assert first["summary"]["all"] == 60 and "ids" not in first
+    assert "Ashanti" in first["facets"]["regions"]
+    ashanti = boss.get(page, params={"region": "Ashanti", "pageSize": 100}).json()
+    assert ashanti["total"] == 9 and all(f["profile"]["region"] == "Ashanti" for f in ashanti["items"])
+    scores = [f["stats"]["score"] for f in boss.get(page, params={"sort": "score", "dir": "desc"}).json()["items"]]
+    assert scores == sorted(scores, reverse=True)
+    ids = boss.get(page, params={"region": "Ashanti", "ids": "1"}).json()["ids"]
+    assert len(ids) == 9
+    looked = boss.post(f"{API}/admin/farmers/lookup", json={"ids": ids[:3]}).json()
+    assert {f["userId"] for f in looked} == set(ids[:3])
+    # A page past the end shows the last one.
+    assert boss.get(page, params={"page": 99, "pageSize": 25}).json()["page"] == 3
+    # Announcements count their reach from regions and crops only: no names or contacts.
+    audience = boss.get(f"{API}/admin/announcements/audience").json()
+    assert len(audience) == 60 and set(audience[0]) == {"region", "primaryCrops"}
+    # The credit simulator fetches one farmer at a time; the impact is worked out on the server.
+    one = boss.get(f"{API}/admin/credit-config/scoring-inputs/{ids[0]}").json()
+    assert one["userId"] == ids[0] and "records" in one
+    assert boss.get(f"{API}/admin/credit-config/scoring-inputs/nobody").status_code == 404
+    overview = boss.get(f"{API}/admin/overview", params={"range": "12m"}).json()
+    assert overview["kpis"]["totalFarmers"] == 60 and overview["cropGrowers"] > 0
+    # A farmer can't use any of this (checked last: signing up adds a farmer).
+    assert signup().get(page).status_code == 401

@@ -311,6 +311,28 @@ class PasswordReset(Base):
     __table_args__ = (Index("ix_password_resets_user_created", "user_id", "created_at"),)
 
 
+class PhoneCode(Base):
+    """A one-time code sent by SMS to prove a farmer owns their phone number. Only a keyed hash
+    of the code is kept; it is bound to the number it was sent to, expires, allows a few
+    attempts, and a newer request replaces it."""
+
+    __tablename__ = "phone_codes"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = created_column()
+    expires_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Set when the code is used, or replaced by a newer one.
+    used_at: Mapped[datetime | None] = mapped_column(Timestamp)
+
+    __table_args__ = (Index("ix_phone_codes_user_created", "user_id", "created_at"),)
+
+
 class CreditReservation(Base):
     """AI credits held for one assistant question or crop scan.
 

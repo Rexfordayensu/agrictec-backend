@@ -81,7 +81,8 @@ def diagnosis_out(row: m.Diagnosis) -> f.Diagnosis:
         treatment=row.treatment,
         prevention=row.prevention,
         crop=row.crop,
-        image_thumb=row.image_thumb,
+        # Only an inline JPEG (made by the API): never a link that would load from another site.
+        image_thumb=row.image_thumb if (row.image_thumb or "").startswith("data:image/jpeg;base64,") else None,
         date=row.date,
         source=row.source,
     )

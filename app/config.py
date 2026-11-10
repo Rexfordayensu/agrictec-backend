@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     # Signs the guest device cookie. Required (32+ characters) in production.
     secret_key: str = "dev-only-insecure-secret-change-me"
+    # Keys the Ghana Card fingerprints (duplicate check). Optional: SECRET_KEY is used without it.
+    # Set it if you may ever rotate SECRET_KEY, since a new key makes earlier fingerprints stop
+    # matching the same cards.
+    ghana_card_hash_key: str | None = None
 
     # The Next.js app's origin(s). Cookies need credentials, so "*" is never allowed.
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
@@ -43,6 +47,9 @@ class Settings(BaseSettings):
     rate_limits_enabled: bool = True
 
     farmer_session_days: int = 30
+    # Days without any use before a farmer is signed out (phones are often shared). The session
+    # still ends after FARMER_SESSION_DAYS at most.
+    farmer_idle_days: int = 7
     # Admin spec: 30 minutes of inactivity signs an admin out; 12 hours at most per sign-in.
     admin_idle_minutes: int = 30
     admin_session_hours: int = 12
@@ -85,7 +92,7 @@ class Settings(BaseSettings):
     openweather_api_key: str | None = None
     # Claude (https://platform.claude.com): the assistant's answers and the crop doctor's reading
     # of a photo. Without a key, the assistant answers from the admin's knowledge base and the
-    # crop doctor gives its demonstration results.
+    # crop doctor is unavailable (it never makes up a diagnosis).
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-opus-5-5"
 
@@ -131,6 +138,7 @@ class Settings(BaseSettings):
         "anthropic_api_key",
         "frontend_proxy_secret",
         "trusted_client_ip_header",
+        "ghana_card_hash_key",
         mode="before",
     )
     @classmethod

@@ -20,7 +20,7 @@ from sqlalchemy import text  # noqa: E402
 from alembic import command  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.services.backup import bootstrap  # noqa: E402
+from app.services.backup import bootstrap, reset_default_lenders  # noqa: E402
 
 API = "/api/v1"
 ADMIN_PASSWORD = "Sup3r$ecret!"
@@ -50,6 +50,9 @@ def clean_db():
         conn.execute(text("ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_truncate"))
     with SessionLocal() as db:
         bootstrap(db, seed_demo_data=False)
+        # A live platform starts with no lenders; the tests use the demo world's sample ones.
+        reset_default_lenders(db)
+        db.commit()
     yield
 
 
