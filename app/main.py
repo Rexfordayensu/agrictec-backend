@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
         title="AgriCtec API",
         version="1.0.0",
         description=(
-            "Farm records, credit scores and loan access for farmers in Ghana, and the Super Admin "
+            "Farm records, AgriCtec scores and loan access for farmers in Ghana, and the Super Admin "
             "Console that runs the platform. JSON is camelCase, matching the frontend's types. "
             "Browsers authenticate with httpOnly cookies; other clients send the sign-in token as "
             "`Authorization: Bearer <token>`."

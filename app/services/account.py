@@ -7,10 +7,8 @@ from sqlalchemy.orm import Session as DB
 from app.core.errors import AppError
 from app.domain.announcements import by_severity, in_audience, is_live
 from app.domain.clock import now_utc, parse_iso
-from app.domain.credit import calculate_credit_score, score_label
+from app.domain.credit import SCORE_NAME, calculate_credit_score, score_factors, score_gaps, score_label
 from app.domain.farming import build_readiness
-from app.domain.finance import annualized_net_profit
-from app.domain.loans import borrowing_limit
 from app.models import (
     Announcement,
     ChatMessage,
@@ -18,6 +16,8 @@ from app.models import (
     FarmRecord,
     MomoTransaction,
     OnboardingDraft,
+    TransactionEvidence,
+    TransactionEvidenceLink,
     Profile,
     User,
     UserSettings,
@@ -25,7 +25,7 @@ from app.models import (
 )
 from app.schemas import farm as f
 from app.schemas.platform import Announcement as AnnouncementOut
-from app.services import farm, lending, platform_store, verifications
+from app.services import farm, lending, platform_store, transactions, verifications
 from app.services.farmer_data import load_farmer
 from app.services.mappers import announcement_out
 
@@ -48,7 +48,15 @@ def credit_summary(db: DB, user_id: str) -> f.CreditSummary:
             )
         )
     )
-    annualized = annualized_net_profit(data.records)
+    by_status = transactions.status_counts(db, user_id)
+    total = sum(by_status.values())
+    with_evidence = db.scalar(
+        select(func.count(func.distinct(TransactionEvidenceLink.record_kind + ":" + TransactionEvidenceLink.record_id)))
+        .join(TransactionEvidence, TransactionEvidence.id == TransactionEvidenceLink.evidence_id)
+        .where(TransactionEvidence.user_id == user_id)
+    ) or 0
+    verified = by_status.get("verified", 0)
+    stamps = [item.created_at for item in [*data.records, *data.momo]]
     return f.CreditSummary(
         credit=credit,
         band=score_label(credit.score, config.bands),
@@ -56,9 +64,23 @@ def credit_summary(db: DB, user_id: str) -> f.CreditSummary:
             records=data.records, momo=data.momo, profile=data.profile,
             min_records=config.eligibility.min_records, card_under_review=card_pending,
         ),
-        annualized_profit=annualized,
-        max_affordable=borrowing_limit(annualized, config.eligibility),
         under_review=under_review(db, user_id),
+        score_name=SCORE_NAME,
+        computed_at=now_utc(),
+        data_as_of=max(stamps) if stamps else None,
+        methodology_version=getattr(config, "version", None),
+        factors=score_factors(credit, config),
+        evidence=f.EvidenceCoverage(
+            by_status=by_status,
+            total=total,
+            verified=verified,
+            with_evidence=with_evidence,
+            verified_share=f"{verified / total * 100:.2f}" if total else "0.00",
+        ),
+        missing=score_gaps(
+            data.records, data.momo, data.profile, config,
+            verified_entries=verified, entries_with_evidence=with_evidence,
+        ),
     )
 
 

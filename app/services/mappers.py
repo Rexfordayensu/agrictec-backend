@@ -48,8 +48,8 @@ def profile_out(row: m.Profile | None, user_id: str) -> f.Profile:
     )
 
 
-def transaction_metadata(row, kind: str) -> dict:
-    db = object_session(row)
+def transaction_metadata(row, kind: str, include_history: bool = True) -> dict:
+    db = object_session(row) if include_history else None
     history = db.scalars(select(m.TransactionVerification).where(
         m.TransactionVerification.record_kind == kind, m.TransactionVerification.record_id == row.id,
         m.TransactionVerification.user_id == row.user_id,
@@ -63,7 +63,7 @@ def transaction_metadata(row, kind: str) -> dict:
                 evidence_count=count or 0, history=[f.StatusHistory.model_validate(h) for h in history])
 
 
-def record_out(row: m.FarmRecord) -> f.FarmRecord:
+def record_out(row: m.FarmRecord, *, include_history: bool = True) -> f.FarmRecord:
     return f.FarmRecord(
         id=row.id,
         user_id=row.user_id,
@@ -74,12 +74,12 @@ def record_out(row: m.FarmRecord) -> f.FarmRecord:
         date=row.date,
         notes=row.notes,
         direction=row.direction,
-        **transaction_metadata(row, "farm"),
+        **transaction_metadata(row, "farm", include_history),
         created_at=row.created_at,
     )
 
 
-def momo_out(row: m.MomoTransaction) -> f.MomoTransaction:
+def momo_out(row: m.MomoTransaction, *, include_history: bool = True) -> f.MomoTransaction:
     return f.MomoTransaction(
         id=row.id,
         user_id=row.user_id,
@@ -89,7 +89,7 @@ def momo_out(row: m.MomoTransaction) -> f.MomoTransaction:
         reference=row.reference,
         notes=row.notes,
         reference_duplicate=row.reference_duplicate,
-        **transaction_metadata(row, "momo"),
+        **transaction_metadata(row, "momo", include_history),
         network=row.network,
         date=row.date,
         created_at=row.created_at,

@@ -131,3 +131,97 @@ def score_label(score: float, bands: CreditBands | None = None) -> ScoreLabel:
     if score < bands.excellent:
         return "Good"
     return "Excellent"
+
+
+# ---------- Explaining the score (milestone 4): the formula above is unchanged ----------
+
+SCORE_NAME = "AgriCtec score"
+SCORE_RANGE = 550
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def score_factors(credit: CreditScoreBreakdown, config: CreditConfigInput) -> list[dict]:
+    """Each factor: its weight, the points it adds and could add, what it measures and how to
+    raise it, in the farmer's words (lib/calculations/score-steps.ts says the same)."""
+    t, w = config.targets, config.weights
+    text = {
+        "payment_history": (
+            "Payment history",
+            f"Months, out of the last {t.months_window}, with at least one entry logged on time",
+            f"Log at least one entry in each of the last {t.months_window} months",
+        ),
+        "record_completeness": (
+            "Record completeness",
+            f"Records and MoMo entries logged within {RECORD_GRACE_DAYS} days, against a target of {t.records_for_full}",
+            f"Aim for {t.records_for_full}+ records and MoMo entries, each logged within {RECORD_GRACE_DAYS} days",
+        ),
+        "income_stability": (
+            "Income stability",
+            "Your recorded income compared with your recorded costs",
+            "Keep your recorded income above your costs",
+        ),
+        "momo_activity": (
+            "MoMo activity",
+            f"Mobile Money entries logged on time, against a target of {t.momo_for_full}",
+            f"Log {t.momo_for_full}+ Mobile Money transactions",
+        ),
+        "verification": (
+            "Verification",
+            "Profile complete, phone verified, farm location verified and Ghana Card verified",
+            "Complete your profile and the verifications in Settings",
+        ),
+    }
+    out = []
+    for key in FACTOR_KEYS:
+        weight = getattr(w, key)
+        value = getattr(credit, key)
+        max_points = round_int(weight / 100 * SCORE_RANGE)
+        label, measures, improve = text[key]
+        out.append({
+            "key": key, "label": label, "weight": weight, "value": value,
+            "points": round_int(value / 100 * max_points), "max_points": max_points,
+            "measures": measures, "improve": improve,
+        })
+    return out
+
+
+def score_gaps(
+    records: list[FarmRecord],
+    momo: list[MomoTransaction],
+    profile: Profile | None,
+    config: CreditConfigInput,
+    *,
+    verified_entries: int,
+    entries_with_evidence: int,
+    now: date | None = None,
+) -> list[str]:
+    """What is missing, in plain words, from the farmer's real data only."""
+    now = now or today()
+    gaps: list[str] = []
+    timely = [r for r in records if recorded_on_time(r)] + [t for t in momo if recorded_on_time(t)]
+    active = {(item.date.year, item.date.month) for item in timely}
+    this_month = month_start(now)
+    window = max(1, config.targets.months_window)
+    empty = [add_months(this_month, -i) for i in range(window - 1, -1, -1)]
+    empty = [m for m in empty if (m.year, m.month) not in active]
+    if empty:
+        names = [f"{MONTH_NAMES[m.month - 1]} {m.year}" for m in empty]
+        listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+        gaps.append(f"No entries logged on time in {listed}.")
+    late = len(records) + len(momo) - len(timely)
+    if late:
+        gaps.append(
+            f"{late} {'entry was' if late == 1 else 'entries were'} logged more than {RECORD_GRACE_DAYS} days late, "
+            "so they don't build the score."
+        )
+    if not momo:
+        gaps.append("No Mobile Money entries yet.")
+    entries = len(records) + len(momo)
+    if entries and not entries_with_evidence:
+        gaps.append("None of your entries has a receipt or statement attached.")
+    if entries and not verified_entries:
+        gaps.append("None of your entries is verified yet: attach evidence and request a review.")
+    labels = ["Your farm profile is incomplete.", "Your phone number is not verified.",
+              "Your farm location is not verified.", "Your Ghana Card is not verified."]
+    gaps.extend(label for label, ok in zip(labels, verification_checks(profile), strict=True) if not ok)
+    return gaps

@@ -130,6 +130,21 @@ def upgrade():
     op.execute(
         "CREATE TRIGGER transaction_history_no_truncate BEFORE TRUNCATE ON transaction_verifications FOR EACH STATEMENT EXECUTE FUNCTION transaction_history_read_only()"
     )
+    # A polymorphic link has no ordinary FK to two tables. Enforce its owner and target in
+    # PostgreSQL too, including during restores, so a malformed backup cannot cross-link users.
+    op.execute("""CREATE FUNCTION check_transaction_evidence_link() RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE evidence_owner text; record_owner text; BEGIN
+        SELECT user_id INTO evidence_owner FROM transaction_evidence WHERE id=NEW.evidence_id;
+        IF NEW.record_kind='farm' THEN
+            SELECT user_id INTO record_owner FROM farm_records WHERE id=NEW.record_id;
+        ELSE
+            SELECT user_id INTO record_owner FROM momo_transactions WHERE id=NEW.record_id;
+        END IF;
+        IF evidence_owner IS NULL OR record_owner IS NULL OR evidence_owner<>record_owner THEN
+            RAISE EXCEPTION 'Evidence must belong to the transaction owner';
+        END IF;
+        RETURN NEW; END; $$""")
+    op.execute("CREATE TRIGGER evidence_link_owner BEFORE INSERT OR UPDATE ON transaction_evidence_links FOR EACH ROW EXECUTE FUNCTION check_transaction_evidence_link()")
     # Every legacy entry starts with an honest baseline, without inventing a verification.
     for table, kind in (("farm_records", "farm"), ("momo_transactions", "momo")):
         op.execute(f"""INSERT INTO transaction_verifications
@@ -161,6 +176,8 @@ def downgrade():
     op.execute("DROP FUNCTION cleanup_transaction_evidence()")
     op.execute("DROP TRIGGER evidence_file_cleanup ON transaction_evidence")
     op.execute("DROP FUNCTION cleanup_evidence_file()")
+    op.execute("DROP TRIGGER evidence_link_owner ON transaction_evidence_links")
+    op.execute("DROP FUNCTION check_transaction_evidence_link()")
     op.drop_table("transaction_evidence_links")
     op.drop_table("transaction_evidence")
     # Evidence payloads are left in stored_files on downgrade, to avoid destroying uploads.

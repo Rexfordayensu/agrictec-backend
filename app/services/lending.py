@@ -392,17 +392,9 @@ def _reference(db: DB) -> str:
 
 def eligibility(db: DB, user_id: str, query: f.EligibilityQuery) -> f.EligibilityResult:
     data = load_farmer(db, user_id)
-    config = platform_store.credit_config(db)
-    score = calculate_credit_score(data.records, data.momo, data.profile, config).score
     if query.partner_id:
         listed_lender(db, query.partner_id)  # 404 unless farmers can see it
-    return check_eligibility(
-        amount=query.amount,
-        records=data.records,
-        score=score,
-        rules=config.eligibility,
-        ghana_card=data.profile.ghana_card.status,
-    )
+    return check_eligibility(ghana_card=data.profile.ghana_card.status)
 
 
 ACCOUNT_REVIEW_MESSAGE = (
@@ -507,7 +499,7 @@ def review(db: DB, app_id: str) -> LoanReview:
     config = platform_store.credit_config(db)
     score = calculate_credit_score(farmer.records, farmer.momo, farmer.profile, config).score
     checks = eligibility_checks(
-        amount=float(app.amount), records=farmer.records, score=score, rules=config.eligibility
+        records=farmer.records, ghana_card=farmer.profile.ghana_card.status, rules=config.eligibility
     )
     return LoanReview.model_validate({"farmerExists": True, "currentScore": score, "checks": checks})
 

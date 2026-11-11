@@ -138,6 +138,15 @@ class TransactionFields:
     updated_at: Mapped[datetime | None] = mapped_column(Timestamp)
 
 
+def transaction_checks(table: str):
+    statuses = "'self_reported','evidence_submitted','verification_pending','verified','rejected','disputed'"
+    return (
+        CheckConstraint("source_type IN ('farmer_entry','statement_upload')", name=f"ck_{table}_source"),
+        CheckConstraint(f"verification_status IN ({statuses})", name=f"ck_{table}_status"),
+        CheckConstraint("currency = 'GHS'", name=f"ck_{table}_currency"),
+    )
+
+
 class FarmRecord(TransactionFields, Base):
     __tablename__ = "farm_records"
 
@@ -155,6 +164,10 @@ class FarmRecord(TransactionFields, Base):
     __table_args__ = (
         Index("ix_farm_records_user_date", "user_id", "date"),
         Index("ix_farm_records_user_status", "user_id", "verification_status"),
+        *transaction_checks("farm_records"),
+        CheckConstraint("type IN ('income','expense','activity','financing')", name="ck_farm_records_type"),
+        CheckConstraint("category IS NULL OR (type='income' AND category IN ('crop_sale','livestock_sale','produce_delivery','other_farm_income')) OR (type='expense' AND category IN ('fertilizer','seed','equipment','transport','labour','irrigation','land_rent','other_farm_expense')) OR (type='financing' AND category IN ('loan_disbursement','loan_repayment','interest_payment','other_financing'))", name="ck_farm_records_category"),
+        CheckConstraint("(type='financing' AND direction IS NOT NULL AND direction IN ('in','out')) OR (type<>'financing' AND direction IS NULL)", name="ck_farm_records_financing_direction"),
     )
 
 
@@ -176,6 +189,10 @@ class MomoTransaction(TransactionFields, Base):
     __table_args__ = (
         Index("ix_momo_user_date", "user_id", "date"),
         Index("ix_momo_user_status", "user_id", "verification_status"),
+        *transaction_checks("momo_transactions"),
+        CheckConstraint("category IS NULL OR category IN ('crop_sale','livestock_sale','produce_delivery','other_farm_income','fertilizer','seed','equipment','transport','labour','irrigation','land_rent','other_farm_expense','loan_disbursement','loan_repayment','interest_payment','other_financing')", name="ck_momo_transactions_category"),
+        Index("ux_momo_user_reference", "user_id", text("upper(reference)"), unique=True,
+              postgresql_where=text("reference IS NOT NULL AND reference <> '' AND NOT reference_duplicate")),
         Index("ix_momo_reference_upper", text("upper(reference)")),
     )
 
@@ -634,6 +651,24 @@ class Lender(Base):
     updated_by: Mapped[str | None] = mapped_column(String(80))
 
 
+class FinancialReportExport(Base):
+    """A financial report a farmer generated: the PDF (in stored_files) and the exact figures it
+    was made from. Never changed afterwards; the farmer can delete it."""
+
+    __tablename__ = "financial_report_exports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    period_months: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    file_key: Mapped[str] = mapped_column(ForeignKey("stored_files.key"), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
 class LoanProduct(Base):
     """A loan a lender offers, as an administrator typed it from the lender's official terms.
     `draft` is being edited; each publish freezes it into a new LoanProductVersion."""
@@ -857,6 +892,7 @@ __all__ = [
     "DismissedAnnouncement",
     "FarmAlert",
     "FarmRecord",
+    "FinancialReportExport",
     "ImpersonationToken",
     "Lender",
     "LoanApplication",

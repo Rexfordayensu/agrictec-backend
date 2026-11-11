@@ -1,7 +1,7 @@
 """The signed-in farmer's own data (/me). Reads work in the admin's read-only view; every write
 needs the farmer's own session."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from sqlalchemy.orm import Session as DB
@@ -14,7 +14,8 @@ from app.routers.common import set_onboarded_hint
 from app.schemas import farm as f
 from app.schemas.base import CamelModel, Confirmation, Message
 from app.schemas.platform import Announcement
-from app.services import account, farm, lending, notifications, phone_verification, subscriptions, tools, verifications
+from app.routers.transactions import attachment
+from app.services import account, farm, financial_reports, financial_summary, lending, notifications, phone_verification, subscriptions, tools, verifications
 
 router = APIRouter(prefix="/me", tags=["Farmer"])
 
@@ -162,6 +163,40 @@ def save_settings(body: f.AppSettings, ctx: Writer, db: Database):
 def credit_summary(ctx: Reader, db: Database):
     """The score with the live rules, its band, the readiness checklist and the borrowing limit."""
     return account.credit_summary(db, ctx.user.id)
+
+
+@router.get("/financial-summary")
+def my_financial_summary(ctx: Reader, db: Database, months: Literal["3", "6", "12"] = "6"):
+    """Exact totals (decimal strings) for the last 3, 6 or 12 months, verified vs self-reported."""
+    return financial_summary.for_user(db, ctx.user.id, int(months))
+
+
+class ReportRequest(CamelModel):
+    months: Literal[3, 6, 12] = 6
+
+
+@router.post(
+    "/reports/financial", status_code=201, dependencies=[Depends(rate_limit("financial-report", 10, 3600))]
+)
+def create_financial_report(body: ReportRequest, ctx: Writer, db: Database):
+    """A PDF of the farmer's recorded figures for the period, kept so it can be downloaded again."""
+    return financial_reports.create(db, ctx.user.id, body.months)
+
+
+@router.get("/reports/financial")
+def list_financial_reports(ctx: Reader, db: Database):
+    return financial_reports.list_for(db, ctx.user.id)
+
+
+@router.get("/reports/financial/{report_id}/file")
+def financial_report_file(report_id: str, ctx: Reader, db: Database):
+    data, name = financial_reports.file(db, ctx.user.id, report_id)
+    return attachment((name, data, "application/pdf"))
+
+
+@router.delete("/reports/financial/{report_id}", status_code=204)
+def delete_financial_report(report_id: str, ctx: Writer, db: Database):
+    financial_reports.delete(db, ctx.user.id, report_id)
 
 
 @router.post("/loans/eligibility", response_model=f.EligibilityResult)

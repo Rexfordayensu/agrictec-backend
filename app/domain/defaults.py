@@ -25,7 +25,7 @@ DEFAULT_CREDIT_CONFIG: dict = {
     },
     "targets": {"recordsForFull": 30, "momoForFull": 20, "monthsWindow": 6},
     "bands": {"fair": 500, "good": 650, "excellent": 750},
-    "eligibility": {"minRecords": 5, "minScore": 550, "maxProfitMultiplier": 3},
+    "eligibility": {"minRecords": 5},
     "updatedAt": BUILT_IN,
     "updatedBy": "System",
 }
@@ -58,7 +58,7 @@ PLAN_CATALOG: list[dict] = [
         "aiCredits": 0,
         "features": [
             "Farm records and MoMo tracking",
-            "Credit score and loan comparisons",
+            "AgriCtec score and loan product comparisons",
             "Market and weather information",
         ],
     },
@@ -160,10 +160,10 @@ DEFAULT_ASSISTANT_KB: list[dict] = [
         "priority": 80,
         "active": True,
         "reply": {
-            "title": "Improve Your Credit Score",
+            "title": "Improve Your AgriCtec Score",
             "intro": "Your score is {score} ({scoreLabel}). {creditFocus}",
             "bullets": ["{creditSteps}"],
-            "tip": "This is your AgriCtec farm score. Lenders make their own decisions; improving it does not guarantee a loan.",
+            "tip": "This is AgriCtec's own measure of your records, not a credit bureau score. Lenders make their own decisions; improving it does not guarantee a loan.",
         },
     },
     {
@@ -290,7 +290,7 @@ DEFAULT_ASSISTANT_KB: list[dict] = [
                 "Maize planting seasons and cassava tips.",
                 "Fall armyworm, pests and fertilizer guidance.",
                 "Weather information and indicative cocoa prices.",
-                "Your credit score, farm income, expenses and profit.",
+                "Your AgriCtec score, farm income, expenses and profit.",
             ],
             "tip": "Tell me the crop and the issue, or choose a quick prompt below.",
         },

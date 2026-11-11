@@ -233,7 +233,7 @@ def approve(db: DB, actor: Admin, request_id: str, commit: bool = True) -> Verif
     notice = notifications.create(
         db, request.user_id, "verification",
         f"Your {KIND_LABELS[request.kind]} is verified",
-        "Thank you. This raises your credit score's verification factor."
+        "Thank you. This raises the verification factor of your AgriCtec score."
         + (" You can now apply for loans." if request.kind == "ghanaCard" else ""),
         "/settings/verification",
     )

@@ -364,3 +364,33 @@ def test_decimal_finance_and_existing_credit_score_results():
     financing = records[0].model_copy(update={"type": "financing", "direction": "in", "amount": 9999})
     assert total_income([*records, financing]) == Decimal("0.30")
     assert total_expenses([*records, financing]) == Decimal("0.10")
+
+
+def test_backup_restore_appends_status_reconciliation_without_erasing_decisions():
+    farmer = signup()
+    boss = super_admin()
+    row = add(farmer)
+    assert upload(farmer, row).status_code == 200
+    secret = "correct horse battery staple"
+    backup = boss.post(f"{API}/admin/system/backup", json={"passphrase": secret}).json()
+    assert farmer.post(f"{API}/me/transactions/farm/{row['id']}/request-review").status_code == 200
+    assert boss.post(f"{API}/admin/transactions/farm/{row['id']}/verify", json={"reason": "Receipt checked"}).status_code == 200
+    restored = boss.post(f"{API}/admin/system/restore", json={"backup":backup,"passphrase":secret,"confirmation":"RESTORE","password":ADMIN_PASSWORD})
+    assert restored.status_code == 200, restored.text
+    assert farmer.post(f"{API}/auth/login",json={"email":"ama@example.com","password":"password123"}).status_code == 200
+    entry = farmer.get(f"{API}/me/transactions/farm/{row['id']}").json()
+    assert entry["verificationStatus"] == "evidence_submitted"
+    assert entry["history"][-1]["fromStatus"] == "verified"
+    assert entry["history"][-1]["toStatus"] == "evidence_submitted"
+    assert entry["history"][-1]["actorType"] == "system"
+    assert any(h["toStatus"] == "verified" and h["actorType"] == "admin" for h in entry["history"])
+
+
+def test_database_refuses_cross_farmer_evidence_links():
+    first, second = signup(), signup("second@example.com")
+    first_entry, second_entry = add(first), add(second)
+    evidence = upload(first, first_entry).json()["evidence"][0]
+    with engine.begin() as conn:
+        with pytest.raises(DBAPIError):
+            conn.execute(text("INSERT INTO transaction_evidence_links(evidence_id,record_kind,record_id) VALUES (:evidence,'farm',:record)"),
+                         {"evidence":evidence["id"], "record":second_entry["id"]})
