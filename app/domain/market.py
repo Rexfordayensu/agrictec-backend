@@ -44,6 +44,27 @@ def published_prices(prices: list[MarketPrice]) -> list[MarketPrice]:
     return [p for p in prices if p.status == "published" and publication_error(p) is None]
 
 
+def crop_price_per_tonne(crop: str, prices: list[MarketPrice]) -> tuple[float | None, MarketPrice | None]:
+    """The published price per tonne for a crop (lib/admin/crop-pricing.ts marketReference):
+    only from a single published observation ("Rice (local)" counts for Rice) priced by weight,
+    never a range. Several observations are not reduced to one price, and nothing is invented:
+    (None, row) or (None, None) when there is no single per-tonne price."""
+    name = crop.strip().lower()
+    matches = []
+    for p in published_prices(prices):
+        label = p.crop.strip().lower()
+        if label == name or label.startswith((f"{name} ", f"{name}(")):
+            matches.append(p)
+    if len(matches) != 1:
+        return None, None
+    row = matches[0]
+    per_unit = row.package_weight_kg if row.unit in ("bag", "crate") else {"kg": 1.0, "tonne": 1000.0}.get(row.unit)
+    kg = per_unit * (row.quantity or 1) if per_unit else None
+    if not kg or (row.price_max and row.price_max != row.price):
+        return None, row
+    return float(round(row.price * 1000 / kg)), row
+
+
 def unit_label(price: MarketPrice) -> str:
     """"1 bag (50 kg each)"."""
     quantity = price.quantity or 1

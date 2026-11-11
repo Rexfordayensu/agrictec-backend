@@ -225,4 +225,5 @@ def scan_crop(db: DB, user_id: str, filename: str, content_type: str | None, con
 
 def predict(db: DB, user_id: str, data: f.YieldInput) -> f.YieldResult:
     subscriptions.assert_feature(db, user_id, "yieldPredictor")
-    return f.YieldResult(**predict_yield(data, platform_store.crops(db)))
+    prices = published_prices(platform_store.market_prices(db))
+    return f.YieldResult(**predict_yield(data, platform_store.crops(db), prices))

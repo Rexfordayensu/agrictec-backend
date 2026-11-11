@@ -69,6 +69,26 @@ def test_future_entries_and_older_months_are_left_out_and_empty_months_shown():
         financial_summary.period_bounds(4, TODAY)
 
 
+def test_the_chart_starts_when_the_farmer_started_recording():
+    # First entry in October: a 6-month period (Jun-Nov) charts Oct and Nov only.
+    farm = [row("activity", "0", on=date(2026, 10, 15)), row("income", "50", on=date(2026, 11, 2))]
+    s = financial_summary.build(farm, [], 6, TODAY)
+    assert [m["month"] for m in s["monthly"]] == ["2026-10", "2026-11"]
+    assert s["firstRecordedOn"] == "2026-10-15"
+    assert s["period"]["from"] == "2026-06-01"  # the totals still cover the whole period
+    # A MoMo entry counts as recording too.
+    started = financial_summary.build([], [momo("in", "20", on=date(2026, 9, 3))], 6, TODAY)
+    assert [m["month"] for m in started["monthly"]] == ["2026-09", "2026-10", "2026-11"]
+    # Recording before the period: the whole period is charted.
+    assert len(financial_summary.build([row("income", "1", on=date(2025, 1, 5))], [], 6, TODAY)["monthly"]) == 6
+    # Nothing recorded yet: only this month, and no start date.
+    empty = financial_summary.build([], [], 12, TODAY)
+    assert [m["month"] for m in empty["monthly"]] == ["2026-11"] and empty["firstRecordedOn"] is None
+    # A future-dated entry doesn't count as having started.
+    future = financial_summary.build([row("income", "9", on=TODAY + timedelta(days=3))], [], 3, TODAY)
+    assert future["firstRecordedOn"] is None
+
+
 def test_only_reviewed_entries_count_as_verified():
     farm = [row("income", "300", status="verified"), row("income", "100", status="evidence_submitted"),
             row("expense", "100", status="verification_pending")]

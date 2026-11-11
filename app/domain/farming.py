@@ -4,20 +4,23 @@
 from app.domain.constants import YIELD_MULTIPLIERS
 from app.domain.credit import is_profile_complete
 from app.domain.fmt import js_round, round_int
+from app.domain.market import crop_price_per_tonne
 from app.schemas.farm import FarmRecord, MomoTransaction, Profile, ReadinessItem, YieldInput
-from app.schemas.platform import CropContent
+from app.schemas.platform import CropContent, MarketPrice
 
 
 def _crop(crop: str, crops: list[CropContent]) -> CropContent | None:
     return next((c for c in crops if c.crop == crop), None)
 
 
-def predict_yield(data: YieldInput, crops: list[CropContent]) -> dict:
-    """Deterministic: the same input always gives the same output, as a +/-10% range."""
+def predict_yield(data: YieldInput, crops: list[CropContent], prices: list[MarketPrice] | None = None) -> dict:
+    """Deterministic: the same input always gives the same output, as a +/-10% range. Revenue
+    only from a published market price; without one there is no revenue figure."""
     m = YIELD_MULTIPLIERS
     content = _crop(data.crop, crops)
     base = content.yield_per_acre if content else 0
-    price = content.price_per_tonne if content else 0
+    price, row = crop_price_per_tonne(data.crop, prices or [])
+    where = (", ".join(x for x in (row.market, row.region) if x) or "Nationwide") if price and row else None
     per_acre = base * m["fertilizer"][data.fertilizer] * m["irrigation"][data.irrigation] * m["season"][data.season]
     expected = per_acre * data.acres
     return {
@@ -25,8 +28,10 @@ def predict_yield(data: YieldInput, crops: list[CropContent]) -> dict:
         "expected": js_round(expected, 2),
         "high": js_round(expected * 1.1, 2),
         "per_acre": js_round(per_acre, 2),
-        "revenue": round_int(expected * price),
+        "revenue": round_int(expected * price) if price else None,
         "price_per_tonne": price,
+        "price_market": where,
+        "price_observed_at": row.observed_at if price and row else None,
         "tips": list(content.tips) if content else [],
         "insight": _insight(data, js_round(per_acre, 2), base),
     }

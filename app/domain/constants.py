@@ -69,18 +69,6 @@ BASE_YIELD_PER_ACRE: dict[str, float] = {
     "Tomato": 15,
 }
 
-# Farm-gate price in GHS per tonne.
-PRICE_PER_TONNE: dict[str, float] = {
-    "Maize": 3200,
-    "Cassava": 900,
-    "Rice": 5500,
-    "Cocoa": 24000,
-    "Yam": 4500,
-    "Plantain": 2000,
-    "Groundnut": 6000,
-    "Tomato": 3500,
-}
-
 CROP_EMOJI: dict[str, str] = {
     "Maize": "🌽",
     "Cassava": "🥔",

@@ -15,7 +15,7 @@ from app.domain.clock import now_utc
 from app.domain.passwords import farmer_password_problem
 from app.models import AuthSession, User
 from app.schemas.farm import Session
-from app.services import platform_store
+from app.services import login_lockout, platform_store
 
 GUEST_EMAIL = "guest@agrictec.demo"
 EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -73,22 +73,39 @@ def sign_up(db: DB, email: str, password: str) -> tuple[str, Session]:
     return _start(db, user)
 
 
-def sign_in(db: DB, email: str, password: str) -> tuple[str, Session]:
+def _check_password(db: DB, email: str, password: str, client: str) -> User | None:
+    """The user when the password is right. Five wrong ones in a row from one address lock that
+    email there for five minutes (423 with when it ends); a wrong one says only that it's wrong."""
+    now = now_utc()
+    key = login_lockout.lockout_key(email, client, scope="farmer")
+    lock = login_lockout.lock_status(db, key, now)
+    if lock.locked and lock.until:
+        raise login_lockout.locked_error(lock.until, now)
     user = _find(db, email)
     if not verify_password(password, user.password_hash if user else None) or not user:
+        after = login_lockout.fail_attempt(db, key, now)
+        db.commit()
+        if after.locked and after.until:
+            raise login_lockout.locked_error(after.until, now)
         raise Unauthorized(BAD_CREDENTIALS, code="bad_credentials")
+    login_lockout.clear(db, key)
+    return user
+
+
+def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple[str, Session]:
+    user = _check_password(db, email, password, client)
     if user.status != "suspended" and user.must_change_password:
         # An admin reset the password: the farmer chooses a new one before any session starts.
         raise Conflict("Choose a new password to finish signing in.", code="password_change_required")
     return _start(db, user)
 
 
-def replace_temporary_password(db: DB, email: str, temporary: str, new_password: str) -> tuple[str, Session]:
+def replace_temporary_password(
+    db: DB, email: str, temporary: str, new_password: str, client: str = "unknown"
+) -> tuple[str, Session]:
     """After an admin reset: checks the temporary password again, saves the farmer's own new
     password (the admin never learns it) and signs them in."""
-    user = _find(db, email)
-    if not user or not verify_password(temporary, user.password_hash):
-        raise Unauthorized(BAD_CREDENTIALS, code="bad_credentials")
+    user = _check_password(db, email, temporary, client)
     if problem := farmer_password_problem(new_password):
         raise AppError(problem)
     if new_password == temporary:
