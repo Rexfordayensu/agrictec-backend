@@ -23,7 +23,6 @@ from app.domain.loans import (
     check_eligibility,
     delete_block,
     eligibility_checks,
-    ghana_card_loan_message,
     status_change_error,
 )
 from app.models import Admin, Lender, LoanApplication, LoanProduct, LoanStatusEvent, Profile, RiskFlag, User
@@ -394,7 +393,14 @@ def eligibility(db: DB, user_id: str, query: f.EligibilityQuery) -> f.Eligibilit
     data = load_farmer(db, user_id)
     if query.partner_id:
         listed_lender(db, query.partner_id)  # 404 unless farmers can see it
-    return check_eligibility(ghana_card=data.profile.ghana_card.status)
+    # The identity level loans need is a platform setting (reviewed card, or NIA-verified).
+    from app.services import ghana_card_verification as identity
+
+    needed = identity.requirements(db)["loan_application"]
+    if needed == "none" or identity.meets(identity.identity_level(db, user_id), needed):
+        return check_eligibility(ghana_card="verified")
+    status = data.profile.ghana_card.status
+    return check_eligibility(ghana_card=status if status != "verified" else "not_provided")
 
 
 ACCOUNT_REVIEW_MESSAGE = (
@@ -415,9 +421,9 @@ def submit(db: DB, user_id: str, data: f.LoanApplicationInput) -> f.LoanApplicat
     is sent (and no rate or payment is ever made up)."""
     if not platform_store.flags(db).loans:
         raise Forbidden("Loans are currently unavailable.", code="feature_off")
-    farmer = load_farmer(db, user_id)
-    if farmer.profile.ghana_card.status != "verified":
-        raise Forbidden(ghana_card_loan_message(farmer.profile.ghana_card.status), code="ghana_card_required")
+    from app.services import ghana_card_verification as identity
+
+    identity.assert_allowed(db, user_id, "loan_application")
     # The loan report gives no recommendation while the account is under review; nor can the
     # farmer send one to a lender.
     if account_under_review(db, user_id):

@@ -299,6 +299,63 @@ can see them for its redirects. To serve the API on another origin instead, set
 - Farmer CSVs are built on the server. For report **PDFs**, the console still renders the
   returned report with `lib/pdf/generate-admin-report.ts`, and the export is logged either way.
 
+## Ghana Card identity verification
+
+Two levels, kept apart in code and on screen:
+
+| Level | How it is reached | What it means |
+| --- | --- | --- |
+| `reviewed` | The farmer types their card number; an admin approves it (Verifications). | AgriCtec reviewed the number. **Not** an identity check. Shown as "Reviewed by AgriCtec". |
+| `nia_verified` | The farmer completes NIA's approved verification (Settings → Verification). | The identity provider confirmed the farmer is the card holder. |
+
+Which level a feature needs is a setting (**System Settings → Identity requirements**, stored as
+`identity:requirements`). Loans need `reviewed` today; switch them to `nia_verified` once NIA is
+live. The check is `ghana_card_verification.assert_allowed` (or the `require_identity(feature)`
+route dependency). Smile ID (below) stays advice for the admin reviewer and never verifies anyone.
+
+**Nothing but the provider can make a farmer `nia_verified`.** No admin action, no browser value
+and no typed-in number. Admins can only close a check the provider left for review, as not
+verified (audited). Only the result is stored (`identity_verifications`): never the card number,
+a photo or biometric data.
+
+### Endpoints
+
+| Route | |
+| --- | --- |
+| `GET /identity-verification/status` | Level, latest attempt, whether the farmer can start or retry, and the feature requirements. |
+| `GET /identity-verification/history` | Past attempts, without provider references. |
+| `POST /identity-verification/start` | `{consent: true, consentVersion}`; 503 `provider_unavailable` until NIA is live. |
+| `POST /identity-verification/retry` | After a failed or expired attempt (3 attempts a day). |
+| `POST /identity-verification/provider-callback` | 404 until the provider adapter supports authenticated callbacks. |
+| `GET/PUT /admin/identity-requirements`, `GET /admin/identity-verifications`, `POST /admin/identity-verifications/{id}/close` | The console. |
+
+### Settings
+
+| Variable | |
+| --- | --- |
+| `IDENTITY_PROVIDER` | `none` (default), `nia`, or `simulated` (development only: refused in production, results labelled simulated and never counted there). |
+| `NIA_API_BASE_URL`, `NIA_API_CREDENTIAL`, `NIA_API_SECRET` | Placeholders for NIA onboarding: rename them to whatever NIA's documentation specifies. Server-side only; never commit real values. |
+| `NIA_VERIFICATION_ENABLED` | `false` until the integration is tested against NIA's test environment. |
+| `IDENTITY_CONSENT_VERSION` | The privacy notice version; changing it means farmers consent again. |
+
+### Connecting NIA (when onboarding is complete)
+
+1. Complete NIA onboarding and obtain its official technical documentation, test environment and
+   credentials. Confirm the authorised data fields, retention rules and the biometric procedure
+   required under L.I. 2523.
+2. Implement `NIAProvider` in `app/integrations/identity_providers.py` from that documentation:
+   `start` (create the session; return NIA's reference, instructions and any redirect URL),
+   `result` (read an outcome) and, only if NIA documents callbacks, `parse_callback` (verify its
+   signature, timestamp and replay protection exactly as documented; set `supports_callback`).
+   Map NIA's outcomes onto `verified`, `failed`, `requires_review` or `expired`, and its reasons
+   onto the codes in `ghana_card_verification.FAILURE_CODES`. Then set `CONTRACT_IMPLEMENTED`.
+3. Add tests that replay NIA's documented sample responses (no real Ghana Card data).
+4. Configure the settings above on Render, test against NIA's test environment, then set
+   `NIA_VERIFICATION_ENABLED=true`.
+5. When NIA verification is live, consider switching loans to `nia_verified` (Identity requirements).
+
+Until then the farmer page says plainly that NIA verification is not available yet.
+
 ## Outside services
 
 | Service | What it does | Needs |

@@ -823,6 +823,67 @@ class VerificationRequest(Base):
     )
 
 
+IDENTITY_STATUSES = ("pending", "processing", "verified", "failed", "expired", "requires_review")
+
+
+class IdentityVerification(Base):
+    """One Ghana Card identity verification attempt with an identity provider (NIA's approved
+    platform). Only the outcome is kept: never the card number, a photo or biometric data.
+    "not_started" is the absence of a row. A typed-in card number reviewed by an admin is a
+    different, lower level (profiles.ghana_card_status), never this."""
+
+    __tablename__ = "identity_verifications"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # "nia", or "simulated" (development only: never counts in production).
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    verification_reference: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # As the provider reports it (e.g. a biometric match), never inferred here.
+    verification_method: Mapped[str | None] = mapped_column(String(60))
+    consent_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    consent_given_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    initiated_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    # When an open session lapses (it then becomes "expired").
+    expires_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    # A sanitised reason from a fixed list (app/services/ghana_card_verification.py).
+    failure_code: Mapped[str | None] = mapped_column(String(40))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # The last provider event applied, so a replayed callback is ignored.
+    last_event_id: Mapped[str | None] = mapped_column(String(160))
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    review_note: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = created_column()
+    updated_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'verified', 'failed', 'expired', 'requires_review')",
+            name="ck_identity_verification_status",
+        ),
+        CheckConstraint("attempt_count >= 1", name="ck_identity_verification_attempts"),
+        Index("ix_identity_verifications_user", "user_id", "created_at"),
+        Index("ix_identity_verifications_status", "status"),
+        # One open session per farmer.
+        Index(
+            "uq_identity_verification_active",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'processing')"),
+        ),
+        # A provider reference names one attempt.
+        Index(
+            "uq_identity_verification_reference",
+            "provider",
+            "verification_reference",
+            unique=True,
+            postgresql_where=text("verification_reference IS NOT NULL"),
+        ),
+    )
+
+
 class RiskFlag(Base):
     __tablename__ = "risk_flags"
 
@@ -893,6 +954,7 @@ __all__ = [
     "FarmAlert",
     "FarmRecord",
     "FinancialReportExport",
+    "IdentityVerification",
     "ImpersonationToken",
     "Lender",
     "LoanApplication",

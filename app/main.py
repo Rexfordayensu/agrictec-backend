@@ -111,10 +111,10 @@ def create_app() -> FastAPI:
             content={"detail": _message(errors), "code": "invalid", "errors": _jsonable(errors)},
         )
 
-    from app.routers import transactions
+    from app.routers import identity, transactions
 
     for router in (transactions.router, auth.router, me.router, platform.router, admin_auth.router, admin_people.router,
-                   admin_lending.router, admin_platform.router):
+                   admin_lending.router, admin_platform.router, identity.router):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 
