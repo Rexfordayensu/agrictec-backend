@@ -71,7 +71,7 @@ def test_claude_answers_with_the_farmers_own_figures(ai_on):
     reply = {k: v for k, v in body["reply"].items() if v is not None}
     assert reply == {"title": "Raising your score", "intro": "Keep recording sales.", "bullets": ["Record every sale"]}
     sent = calls[1]
-    assert "Credit score:" in sent["system"] and "GHS 1,200.00" in sent["system"]
+    assert "AgriCtec score:" in sent["system"] and "GHS 1,200.00" in sent["system"]
     assert "prepared answer" in sent["system"]  # the knowledge base's reply guides Claude
     # The history: the earlier exchange, then the new question.
     assert [m["role"] for m in sent["messages"]] == ["user", "assistant", "user"]
@@ -92,7 +92,7 @@ def test_without_claude_the_knowledge_base_answers(ai_on, settings, monkeypatch)
     c = farmer_on_premium()
     answers.append(claude.AIUnavailable("down"))
     r = c.post(f"{API}/me/assistant", json={"message": "How do I improve my credit score?"}).json()
-    assert r["source"] == "rules" and r["reply"]["title"] == "Improve Your Credit Score"
+    assert r["source"] == "rules" and r["reply"]["title"] == "Improve Your AgriCtec Score"
     assert r["creditsRemaining"] == 99  # a real answer still costs its credit
     monkeypatch.setattr(settings, "anthropic_api_key", None)
     calls.clear()

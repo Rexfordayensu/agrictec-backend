@@ -14,7 +14,8 @@ from app.routers.common import file_response
 from app.schemas import admin as a
 from app.schemas.base import Message
 from app.schemas.farm import VerificationRequest
-from app.services import admin_farmers, insights, risk, team, verifications
+from app.routers.transactions import attachment
+from app.services import admin_farmers, financial_reports, financial_summary, insights, risk, team, verifications
 
 router = APIRouter(prefix="/admin")
 Database = Annotated[DB, Depends(get_db)]
@@ -106,6 +107,26 @@ def export_farmers(body: a.IdList, ctx: allowed("reports.export"), db: Database)
 @router.get("/farmers/{user_id}", response_model=a.FarmerAccount, tags=["Admin farmers"])
 def get_farmer(user_id: str, ctx: allowed("farmers.view"), db: Database):
     return admin_farmers.get_farmer(db, user_id)
+
+
+@router.get("/farmers/{user_id}/financial-summary", tags=["Admin farmers"])
+def farmer_financial_summary(
+    user_id: str, ctx: allowed("farmers.view"), db: Database, months: Literal["3", "6", "12"] = "6"
+):
+    """The same figures the farmer sees. Each look is audited."""
+    return financial_summary.for_admin(db, ctx.admin, user_id, int(months))
+
+
+@router.get("/farmers/{user_id}/reports", tags=["Admin farmers"])
+def farmer_reports(user_id: str, ctx: allowed("farmers.view"), db: Database):
+    return financial_reports.admin_list(db, user_id)
+
+
+@router.get("/farmers/{user_id}/reports/{report_id}/file", tags=["Admin farmers"])
+def farmer_report_file(user_id: str, report_id: str, ctx: allowed("farmers.view"), db: Database):
+    """Each download is audited."""
+    data, name = financial_reports.admin_file(db, ctx.admin, user_id, report_id)
+    return attachment((name, data, "application/pdf"))
 
 
 @router.get("/farmers/{user_id}/detail", response_model=a.FarmerDetail, tags=["Admin farmers"])

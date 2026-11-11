@@ -114,7 +114,8 @@ def test_loans_need_a_verified_card_and_every_rule():
     r = c.post(f"{API}/me/loans/applications", json=loan)
     assert r.status_code == 400 and r.json()["code"] == "no_loan_products"
     eligibility = c.post(f"{API}/me/loans/eligibility", json={"amount": 1000, "partnerId": lender["id"]}).json()
-    assert not eligibility["eligible"] and {i["code"] for i in eligibility["issues"]} >= {"records", "score"}
+    # The AgriCtec score and AgriCtec limits no longer decide loans: only the Ghana Card here.
+    assert eligibility["eligible"] and eligibility["issues"] == [] and eligibility["maxAffordable"] is None
 
 
 def test_an_account_under_review_cannot_apply_for_a_loan():
@@ -144,7 +145,7 @@ def test_ai_tools_follow_the_plan_and_spend_credits():
     assert r.status_code == 403 and r.json()["code"] == "plan_required"
     assert c.post(f"{API}/me/subscription", json={"planId": "premium", "method": "card"}).status_code == 200
     answer = c.post(f"{API}/me/assistant", json={"message": "How do I improve my credit score?"}).json()
-    assert answer["reply"]["title"] == "Improve Your Credit Score"
+    assert answer["reply"]["title"] == "Improve Your AgriCtec Score"
     assert answer["creditsRemaining"] == 99
     # Without Claude the crop doctor is unavailable: it never makes up a diagnosis or spends credits.
     scan = c.post(f"{API}/me/crop-doctor", files={"image": ("leaf.jpg", b"\xff\xd8" + b"0" * 2048, "image/jpeg")}, data={"crop": "Maize"})
@@ -152,7 +153,7 @@ def test_ai_tools_follow_the_plan_and_spend_credits():
     assert c.get(f"{API}/me/diagnoses").json() == []
     # The assistant saved its own question and answer to the conversation.
     chat = c.get(f"{API}/me/chat").json()
-    assert [m["role"] for m in chat] == ["user", "ai"] and chat[1]["content"]["title"] == "Improve Your Credit Score"
+    assert [m["role"] for m in chat] == ["user", "ai"] and chat[1]["content"]["title"] == "Improve Your AgriCtec Score"
     assert c.get(f"{API}/me/subscription").json()["creditsUsed"] == 1
 
 

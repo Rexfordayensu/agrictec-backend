@@ -20,9 +20,9 @@ from app.schemas.platform import CreditBands, Lender
 
 REPORT_CATALOG = [
     {"id": "platform", "title": "Platform Summary", "description": "Headline KPIs, sign-ups over the last 12 months and farmers per region."},
-    {"id": "regions", "title": "Farmers by Region", "description": "Farmers, average credit score, income and Ghana Card verification per region."},
+    {"id": "regions", "title": "Farmers by Region", "description": "Farmers, average AgriCtec score, income and Ghana Card verification per region."},
     {"id": "loans", "title": "Loan Portfolio", "description": "Applications by status, lender and region, with approval and default rates."},
-    {"id": "credit", "title": "Credit Score Report", "description": "The score distribution by band, and the average score per region and per crop."},
+    {"id": "credit", "title": "AgriCtec Score Report", "description": "The score distribution by band, and the average score per region and per crop."},
     {"id": "verifications", "title": "Verification Report", "description": "Volumes by check, approval rate and average review time."},
     {"id": "risk", "title": "Risk Report", "description": "Risk flags by rule and outcome (open, dismissed, confirmed), with severities."},
 ]
@@ -459,7 +459,7 @@ DATASETS: dict[str, dict] = {
             Column("farmType", "Farm type", lambda f: f.profile.farm_type),
             Column("size", "Farm size", _size),
             Column("crops", "Crops", lambda f: "; ".join(crop_names(f.profile)), True),
-            Column("score", "Credit score", lambda f: f.stats.score, True),
+            Column("score", "AgriCtec score", lambda f: f.stats.score, True),
             Column("income", "Income (GHS)", lambda f: f.stats.income, True),
             Column("expenses", "Expenses (GHS)", lambda f: f.stats.expenses),
             Column("records", "Records", lambda f: f.stats.records),
@@ -529,7 +529,7 @@ def datasets_meta() -> list[dict]:
             "dateLabel": ds["dateLabel"],
             "columns": [{"key": c.key, "label": c.label, "default": c.default} for c in ds["columns"]],
         }
-        for key, ds in DATASETS.items()
+        for key, ds in DATASETS.items() if key not in ("records", "momo")
     ]
 
 

@@ -76,7 +76,7 @@ def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
     lines = [
         f"- Name: {ctx.farmer_name or 'not given'}; region: {ctx.region or 'not given'}",
         f"- Main crops: {', '.join(ctx.primary_crops) or 'not given'}",
-        f"- Credit score: {ctx.score} ({score_label(ctx.score, ctx.bands)})",
+        f"- AgriCtec score: {ctx.score} ({score_label(ctx.score, ctx.bands)})",
         f"- Farm records: {ctx.record_count}; total income GHS {ctx.income:,.2f}, total expenses "
         f"GHS {ctx.expenses:,.2f}, profit GHS {ctx.income - ctx.expenses:,.2f}",
         f"- Ghana Card: {ctx.ghana_card or 'not submitted'}",

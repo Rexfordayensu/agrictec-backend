@@ -35,9 +35,12 @@ class CreditBands(CamelModel):
 
 
 class CreditEligibility(CamelModel):
+    # A record-keeping guidance target shown to farmers; not a lender rule.
     min_records: Annotated[int, Field(ge=0, le=1000)]
-    min_score: Score
-    max_profit_multiplier: Annotated[float, Field(ge=0.5, le=20)]
+    # Kept readable for older rule versions only: the AgriCtec score and an AgriCtec borrowing
+    # limit no longer decide anything about loans (milestone 4).
+    min_score: Score | None = None
+    max_profit_multiplier: Annotated[float | None, Field(ge=0.5, le=20)] = None
 
 
 class CreditConfigInput(CamelModel):

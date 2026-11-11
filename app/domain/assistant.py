@@ -31,7 +31,7 @@ _FALLBACK = AssistantReply(
         "Maize planting seasons and cassava tips.",
         "Fall armyworm, pests and fertilizer guidance.",
         "Weather information and indicative cocoa prices.",
-        "Your credit score, farm income, expenses and profit.",
+        "Your AgriCtec score, farm income, expenses and profit.",
     ],
     tip="Tell me the crop and the issue, or choose a quick prompt below.",
 )

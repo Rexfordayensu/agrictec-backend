@@ -38,7 +38,7 @@ MATERIAL_FIELDS = {
 }
 
 
-def transition(status: str, action: str, *, evidence_count: int = 0, reason: str | None = None) -> str:
+def transition(status: str | None, action: str, *, evidence_count: int = 0, reason: str | None = None) -> str:
     if action == "create" and status is None:
         return "self_reported"
     if status not in STATUSES:

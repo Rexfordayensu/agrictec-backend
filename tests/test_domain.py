@@ -78,13 +78,13 @@ def test_amortized_repayment():
     assert monthly_repayment(1200, 0, 12).monthly == 100
 
 
-def test_eligibility_lists_every_failing_rule():
-    rules = default_config().eligibility
-    result = check_eligibility(amount=50_000, records=[record("income", 100)], score=400, rules=rules, ghana_card="pending")
-    codes = [i.code for i in result.issues]
-    assert codes == ["ghana-card", "records", "affordability", "score"]
-    assert not result.eligible
-    assert "being reviewed" in result.reasons[0]
+def test_the_score_and_agrictec_limits_never_decide_a_loan():
+    pending = check_eligibility(ghana_card="pending")
+    assert [i.code for i in pending.issues] == ["ghana-card"] and not pending.eligible
+    assert "being reviewed" in pending.reasons[0]
+    # No score minimum, no records minimum, no borrowing limit.
+    assert check_eligibility(ghana_card="verified").eligible
+    assert check_eligibility(ghana_card="verified").max_affordable is None
 
 
 def test_loan_transitions_and_required_details():

@@ -42,9 +42,9 @@ def load_farmers(db: DB, user_ids: list[str] | None = None) -> dict[str, FarmerD
     profiles = {p.user_id: p for p in db.scalars(select(Profile).where(Profile.user_id.in_(ids)))}
     out = {u.id: FarmerData(user=u, profile=mappers.profile_out(profiles.get(u.id), u.id)) for u in users}
     for row in db.scalars(select(FarmRecord).where(FarmRecord.user_id.in_(ids))):
-        out[row.user_id].records.append(mappers.record_out(row))
+        out[row.user_id].records.append(mappers.record_out(row, include_history=False))
     for row in db.scalars(select(MomoTransaction).where(MomoTransaction.user_id.in_(ids))):
-        out[row.user_id].momo.append(mappers.momo_out(row))
+        out[row.user_id].momo.append(mappers.momo_out(row, include_history=False))
     for row in db.scalars(
         select(Diagnosis).where(Diagnosis.user_id.in_(ids)).order_by(Diagnosis.date.desc(), Diagnosis.created_at.desc())
     ):

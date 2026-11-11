@@ -612,7 +612,7 @@ def build_world(now: datetime | None = None) -> SeedWorld:
         {
             "id": "seed-ann-1",
             "title": "Ghana Card checks are now faster",
-            "message": "Most Ghana Card verifications are now reviewed within one working day. Verify yours to raise your credit score.",
+            "message": "Most Ghana Card verifications are now reviewed within one working day. Verify yours to raise your AgriCtec score.",
             "type": "success", "audience": {"kind": "all"}, "starts_at": at(3, 8), "ends_at": at(-30, 8),
             "active": True, "dismissible": True, "created_by": "Super Admin", "created_at": at(3, 8),
         },

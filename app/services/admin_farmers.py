@@ -265,7 +265,7 @@ def export_csv(db: DB, actor: Admin, ids: list[str] | None) -> str:
             ("Ghana Card status", lambda f: f.profile.ghana_card.status),
             ("Status", lambda f: f.status),
             ("Suspension reason", lambda f: f.suspended_reason or ""),
-            ("Credit score", lambda f: f.stats.score),
+            ("AgriCtec score", lambda f: f.stats.score),
             ("Score band", lambda f: score_label(f.stats.score, bands)),
             ("Records", lambda f: f.stats.records),
             ("MoMo transactions", lambda f: f.stats.momo),

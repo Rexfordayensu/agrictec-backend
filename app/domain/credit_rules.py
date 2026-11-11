@@ -19,8 +19,9 @@ class ScoringInput:
 
 
 def meets_eligibility(records: int, score: int, config: CreditConfigInput) -> bool:
-    """Loan eligibility before an amount is chosen: enough records and score."""
-    return records >= config.eligibility.min_records and score >= config.eligibility.min_score
+    """Meets AgriCtec's record-keeping guidance. The score no longer decides anything about
+    loans, so a draft's weights or bands can't move a farmer in or out."""
+    return records >= config.eligibility.min_records
 
 
 def impact_of(inputs: list[ScoringInput], live: CreditConfigInput, draft: CreditConfigInput) -> dict:

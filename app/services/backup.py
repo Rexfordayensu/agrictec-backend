@@ -47,6 +47,7 @@ from app.models import (
     RiskFlag,
     Subscription,
     StoredFile,
+    FinancialReportExport,
     TransactionEvidence,
     TransactionEvidenceLink,
     TransactionVerification,
@@ -90,6 +91,7 @@ TABLES = [
     LoanStatusEvent,
     VerificationRequest,
     RiskFlag,
+    FinancialReportExport,
     TransactionEvidence,
     TransactionEvidenceLink,
     TransactionVerification,
@@ -308,6 +310,22 @@ def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password
     except Exception as error:
         db.rollback()
         raise AppError(f"Import failed. The previous data has been restored. ({type(error).__name__})") from error
+    # Immutable history is merged, never erased. If restoring an older snapshot changes the
+    # current status, append that system action so the latest history agrees with the entry.
+    for kind, model in (("farm", FarmRecord), ("momo", MomoTransaction)):
+        for row in db.scalars(select(model)):
+            last = db.scalar(select(TransactionVerification).where(
+                TransactionVerification.record_kind == kind,
+                TransactionVerification.record_id == row.id,
+                TransactionVerification.user_id == row.user_id,
+            ).order_by(TransactionVerification.at.desc(), TransactionVerification.id.desc()).limit(1))
+            if last is None or last.to_status != row.verification_status:
+                db.add(TransactionVerification(
+                    record_kind=kind, record_id=row.id, user_id=row.user_id,
+                    from_status=last.to_status if last else None, to_status=row.verification_status,
+                    actor_type="system", actor_id="platform-restore", actor_name="AgriCtec",
+                    reason="Restored the recorded status from a platform backup; no new verification inferred.", at=now_utc(),
+                ))
     after = {"rows": sum(len(r) for r in parsed.values()), **counts(db)}
     append_audit(db, actor, action="system.import", target_type="system", summary="Imported a platform backup",
                  before=before, after=after)

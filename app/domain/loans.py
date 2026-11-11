@@ -4,8 +4,7 @@ import re
 from datetime import date, datetime
 
 from app.domain.clock import as_date
-from app.domain.finance import annualized_net_profit
-from app.domain.fmt import format_ghs, js_round
+from app.domain.fmt import js_round
 from app.schemas.farm import (
     EligibilityIssue,
     EligibilityResult,
@@ -17,12 +16,7 @@ from app.schemas.platform import CreditEligibility
 
 # ---------- Farmer side ----------
 
-LOANS_LOCKED_HINT = "Verify your Ghana Card to unlock loan offers."
-
-
-def borrowing_limit(annualized_profit: float, rules: CreditEligibility) -> float:
-    """The most a farmer can borrow: the admin's multiple of their annualized profit."""
-    return max(0, rules.max_profit_multiplier * annualized_profit)
+LOANS_LOCKED_HINT = "Verify your Ghana Card before you apply to a lender."
 
 
 def monthly_repayment(principal: float, annual_rate_pct: float, months: int) -> RepaymentResult:
@@ -45,54 +39,14 @@ def ghana_card_loan_message(status: str) -> str:
     )
 
 
-def check_eligibility(
-    *,
-    amount: float,
-    records: list[FarmRecord],
-    score: int,
-    rules: CreditEligibility,
-    ghana_card: str = "verified",
-) -> EligibilityResult:
-    """Every failing platform rule, not just the first. A lender's own requirements come from
-    its published loan products, never from made-up per-lender numbers."""
+def check_eligibility(*, ghana_card: str = "verified") -> EligibilityResult:
+    """The identity check AgriCtec itself makes before any application: a verified Ghana Card.
+    The AgriCtec score and AgriCtec's own limits never decide a loan; each lender's published
+    product requirements do (checked per product, not here)."""
     issues: list[EligibilityIssue] = []
-    max_affordable = borrowing_limit(annualized_net_profit(records), rules)
-    min_score = rules.min_score
-
     if ghana_card != "verified":
         issues.append(EligibilityIssue(code="ghana-card", message=ghana_card_loan_message(ghana_card)))
-    if len(records) < rules.min_records:
-        issues.append(
-            EligibilityIssue(
-                code="records",
-                message=f"You need at least {rules.min_records} farm records (you have {len(records)}).",
-            )
-        )
-    if amount > max_affordable:
-        multiple = _number(rules.max_profit_multiplier)
-        issues.append(
-            EligibilityIssue(
-                code="affordability",
-                message=f"Requested amount is above {multiple}× your yearly profit (max {format_ghs(max_affordable)}).",
-            )
-        )
-    if score < min_score:
-        issues.append(
-            EligibilityIssue(
-                code="score", message=f"Credit score must be at least {min_score} (yours is {score})."
-            )
-        )
-    return EligibilityResult(
-        eligible=not issues,
-        reasons=[i.message for i in issues],
-        issues=issues,
-        max_affordable=max_affordable,
-    )
-
-
-def _number(value: float) -> str:
-    """3.0 -> "3", 2.5 -> "2.5" (as JavaScript prints numbers)."""
-    return str(int(value)) if float(value).is_integer() else str(value)
+    return EligibilityResult(eligible=not issues, reasons=[i.message for i in issues], issues=issues)
 
 
 # ---------- The pipeline ----------
@@ -190,30 +144,20 @@ def delete_block(name: str, applications: int) -> str | None:
     )
 
 
-def eligibility_checks(
-    *, amount: float, records: list[FarmRecord], score: int, rules: CreditEligibility
-) -> list[dict]:
-    """Every platform rule, as pass/fail lines with today's rules."""
-    limit = borrowing_limit(annualized_net_profit(records), rules)
-    min_score = rules.min_score
-    checks = [
+def eligibility_checks(*, records: list[FarmRecord], ghana_card: str, rules: CreditEligibility) -> list[dict]:
+    """What AgriCtec itself checks, with today's data: the Ghana Card, and its record-keeping
+    guidance (a target, not a lender rule). The score is shown elsewhere, never as a pass/fail."""
+    return [
+        {
+            "key": "ghana-card",
+            "label": "Ghana Card verified",
+            "pass": ghana_card == "verified",
+            "detail": ghana_card.replace("_", " "),
+        },
         {
             "key": "records",
-            "label": f"At least {rules.min_records} farm records",
+            "label": f"AgriCtec guidance: {rules.min_records}+ farm records",
             "pass": len(records) >= rules.min_records,
             "detail": f"{len(records)} on file",
         },
-        {
-            "key": "affordability",
-            "label": f"Within {_number(rules.max_profit_multiplier)}× yearly profit",
-            "pass": amount <= limit,
-            "detail": f"Limit {format_ghs(limit)}",
-        },
-        {
-            "key": "score",
-            "label": f"Credit score {min_score}+",
-            "pass": score >= min_score,
-            "detail": f"Now {score}",
-        },
     ]
-    return checks

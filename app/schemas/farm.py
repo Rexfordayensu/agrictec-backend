@@ -383,7 +383,8 @@ class EligibilityResult(CamelModel):
     eligible: bool
     reasons: list[str]
     issues: list[EligibilityIssue]
-    max_affordable: float
+    # No longer calculated: AgriCtec doesn't set borrowing limits (lenders' products do).
+    max_affordable: float | None = None
 
 
 class RepaymentResult(CamelModel):
@@ -398,15 +399,43 @@ class EligibilityQuery(CamelModel):
     months: Annotated[int | None, Field(ge=1, le=60)] = None
 
 
+class ScoreFactor(CamelModel):
+    key: str
+    label: str
+    weight: int
+    value: int
+    points: int
+    max_points: int
+    measures: str
+    improve: str
+
+
+class EvidenceCoverage(CamelModel):
+    by_status: dict[str, int]
+    total: int
+    verified: int
+    with_evidence: int
+    verified_share: str
+
+
 class CreditSummary(CamelModel):
-    """Everything the dashboard and loans page derive from the farmer's data."""
+    """The AgriCtec score, how it is built and what is missing. An AgriCtec measure of record
+    keeping and recorded finances: not a credit bureau score and never a loan decision."""
 
     credit: CreditScoreBreakdown
     band: str
     readiness: list[ReadinessItem]
-    annualized_profit: float
-    max_affordable: float
     under_review: bool
+    score_name: str = "AgriCtec score"
+    computed_at: Timestamp | None = None
+    data_as_of: Timestamp | None = None
+    methodology_version: int | None = None
+    factors: list[ScoreFactor] = []
+    evidence: EvidenceCoverage | None = None
+    missing: list[str] = []
+    # No longer calculated (AgriCtec sets no borrowing limit); kept for older clients.
+    annualized_profit: float | None = None
+    max_affordable: float | None = None
 
 
 LoanStatus = Literal[

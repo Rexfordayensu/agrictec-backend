@@ -21,7 +21,7 @@ from app.domain.reports import (
     report_to_csv,
     run_builder,
 )
-from app.models import Admin, AuditEntry, LoanApplication, RiskFlag, VerificationRequest
+from app.models import Admin, AuditEntry, FarmRecord, LoanApplication, MomoTransaction, RiskFlag, VerificationRequest
 from app.schemas.admin import BuilderSpec
 from app.services import lending, platform_store, transactions
 from app.services.farmer_data import accounts, load_farmers
@@ -35,6 +35,17 @@ def _platform(db: DB):
     flags = [risk_out(r) for r in db.scalars(select(RiskFlag))]
     verifications = [verification_out(r) for r in db.scalars(select(VerificationRequest))]
     return config, farmers, apps, flags, verifications
+
+
+def _evidence_coverage(db: DB, farmers) -> dict:
+    """How many registered farmers have at least one entry an AgriCtec reviewer verified."""
+    registered = {f.user_id for f in analytics.registered(farmers)}
+    verified: set[str] = set()
+    for model in (FarmRecord, MomoTransaction):
+        verified |= set(db.scalars(select(model.user_id).where(model.verification_status == "verified").distinct()))
+    count = len(registered & verified)
+    total = len(registered)
+    return {"farmers": count, "total": total, "share": f"{count / total * 100:.2f}" if total else "0.00"}
 
 
 def overview(db: DB, admin: Admin, date_range: str) -> dict:
@@ -55,6 +66,7 @@ def overview(db: DB, admin: Admin, date_range: str) -> dict:
         "cropPopularity": analytics.crop_popularity(farmers),
         "cropGrowers": sum(1 for f in analytics.registered(farmers) if f.profile.primary_crops),
         "scoreDistribution": analytics.score_distribution(farmers, config.bands),
+        "evidenceCoverage": _evidence_coverage(db, farmers),
         "needsAttention": analytics.needs_attention(
             farmers=farmers, apps=apps, flags=flags, verifications=verifications,
             feature_flags=platform_store.flags(db), role=admin.role, now=now,

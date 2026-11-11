@@ -134,7 +134,7 @@ def test_loan_pipeline_on_recorded_applications():
     approved = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "approved", "note": "Good records."})
     assert approved.status_code == 200
     review = boss.get(f"{API}/admin/loan-applications/{app['id']}/review").json()
-    assert review["farmerExists"] and {c["key"] for c in review["checks"]} == {"records", "affordability", "score"}
+    assert review["farmerExists"] and {c["key"] for c in review["checks"]} == {"ghana-card", "records"}
 
     # A lender with applications on record can't be deleted (unpublish or suspend it instead).
     assert boss.delete(f"{API}/admin/lenders/{lender['id']}").status_code == 400
@@ -216,7 +216,7 @@ def test_reports_risk_and_backup_round_trip():
     csv = boss.post(f"{API}/admin/reports/regions/export", params={"format": "csv"})
     assert csv.status_code == 200 and "AgriCtec — Farmers by Region" in csv.text
     preview = boss.post(f"{API}/admin/reports/builder/preview", json={"dataset": "farmers", "columns": ["name", "score"], "region": "Ashanti"}).json()
-    assert preview["total"] == 9 and preview["headers"] == ["Name", "Credit score"]
+    assert preview["total"] == 9 and preview["headers"] == ["Name", "AgriCtec score"]
 
     flags = boss.get(f"{API}/admin/risk/flags", params={"status": "open"}).json()
     assert len({f["rule"] for f in flags}) == 7

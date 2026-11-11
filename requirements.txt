@@ -14,3 +14,4 @@ pillow==13.0.0
 cryptography==50.0.2
 http-ece==1.2.1
 py-vapid==1.9.6
+fpdf2==2.9.0

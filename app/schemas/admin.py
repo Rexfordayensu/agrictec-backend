@@ -169,7 +169,7 @@ class StatusChange(CamelModel):
 
 
 class EligibilityCheck(CamelModel):
-    key: Literal["records", "affordability", "score", "lender-max", "term"]
+    key: Literal["ghana-card", "records"]
     label: str
     pass_: bool = Field(alias="pass")
     detail: str
