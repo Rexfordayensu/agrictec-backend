@@ -86,6 +86,20 @@ class Settings(BaseSettings):
     smile_id_partner_id: str | None = None
     smile_id_api_key: str | None = None
     smile_id_sandbox: bool = True
+    # Ghana Card identity verification (app/services/ghana_card_verification.py).
+    # "nia": NIA's approved Identity Verification System Platform, through the NIAProvider
+    # adapter; it stays unavailable until NIA_VERIFICATION_ENABLED and NIA's official technical
+    # documentation and credentials are in place. "simulated": a development-only stand-in,
+    # refused in production. "none": identity verification is not offered.
+    identity_provider: Literal["nia", "simulated", "none"] = "none"
+    # Placeholders for NIA onboarding: replace with the exact settings NIA's documentation names.
+    nia_api_base_url: str | None = None
+    nia_api_credential: str | None = None
+    nia_api_secret: str | None = None
+    nia_verification_enabled: bool = False
+    # The privacy notice version a farmer must accept before verification starts. Change it when
+    # the notice changes: earlier consent then no longer counts.
+    identity_consent_version: str = "2026-11-11"
     # OpenWeather (https://openweathermap.org, free key): the weather backup with a chance of rain,
     # used when Open-Meteo refuses (its free limit is per IP, and shared hosts run out). Without
     # it, MET Norway is the backup, which publishes no chance of rain for Ghana.
@@ -139,6 +153,9 @@ class Settings(BaseSettings):
         "frontend_proxy_secret",
         "trusted_client_ip_header",
         "ghana_card_hash_key",
+        "nia_api_base_url",
+        "nia_api_credential",
+        "nia_api_secret",
         mode="before",
     )
     @classmethod
@@ -165,6 +182,8 @@ class Settings(BaseSettings):
         if self.environment == "production":
             if self.seed_demo_data:
                 raise ValueError("SEED_DEMO_DATA must be off in production.")
+            if self.identity_provider == "simulated":
+                raise ValueError("IDENTITY_PROVIDER=simulated is for development only, never production.")
             if len(self.secret_key) < 32 or self.secret_key.startswith("dev-only"):
                 raise ValueError("Set SECRET_KEY to a random value of 32+ characters in production.")
             if not self.cookie_secure:

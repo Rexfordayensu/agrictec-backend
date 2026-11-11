@@ -15,7 +15,9 @@ from app.schemas import admin as a
 from app.schemas.base import Message
 from app.schemas.farm import VerificationRequest
 from app.routers.transactions import attachment
+from app.schemas.base import CamelModel
 from app.services import admin_farmers, financial_reports, financial_summary, insights, risk, team, verifications
+from app.services import ghana_card_verification as identity
 
 router = APIRouter(prefix="/admin")
 Database = Annotated[DB, Depends(get_db)]
@@ -23,6 +25,43 @@ Database = Annotated[DB, Depends(get_db)]
 
 def allowed(permission: str):
     return Annotated[AdminContext, Depends(require(permission))]
+
+
+class CloseIdentityReview(CamelModel):
+    note: str
+
+
+class IdentityRequirements(CamelModel):
+    requirements: dict[str, Literal["none", "reviewed", "nia_verified"]]
+
+
+# ---------- Ghana Card identity (NIA) ----------
+
+
+@router.get("/identity-verifications", tags=["Admin verifications"])
+def identity_review_queue(ctx: allowed("verifications.review"), db: Database):
+    """Identity checks the provider left for review (no card numbers or provider references)."""
+    return identity.review_queue(db)
+
+
+@router.post("/identity-verifications/{attempt_id}/close", tags=["Admin verifications"])
+def close_identity_review(attempt_id: str, body: CloseIdentityReview, ctx: allowed("verifications.review"), db: Database):
+    """Closes a check waiting for review as not verified (audited). There is no way for an admin
+    to mark an identity verified: only the provider's answer can."""
+    return identity.close_review(db, ctx.admin, attempt_id, body.note)
+
+
+@router.get("/identity-requirements", tags=["Admin settings"])
+def identity_requirements(ctx: allowed("settings.manage"), db: Database):
+    """Which identity level each feature needs: none, reviewed (an admin reviewed the typed-in
+    card) or nia_verified (the identity provider confirmed it)."""
+    return {"requirements": identity.requirements(db), "features": identity.FEATURES, "levels": list(identity.LEVELS)}
+
+
+@router.put("/identity-requirements", tags=["Admin settings"])
+def save_identity_requirements(body: IdentityRequirements, ctx: allowed("settings.manage"), db: Database):
+    return {"requirements": identity.set_requirements(db, ctx.admin, body.requirements),
+            "features": identity.FEATURES, "levels": list(identity.LEVELS)}
 
 
 # ---------- Overview ----------
