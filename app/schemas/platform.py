@@ -141,41 +141,159 @@ class PlanList(CamelModel):
 # ---------- Lenders ----------
 
 
-class LenderFields(CamelModel):
-    name: Text(80)
-    rate: Annotated[float, Field(ge=1, le=60)]
-    max_amount: Annotated[float, Field(ge=500, le=10_000_000)]
-    min_months: Annotated[int, Field(ge=1, le=60)]
-    max_months: Annotated[int, Field(ge=1, le=60)]
-    min_score: Score
-    color: Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]
-    active: bool
-    description: Annotated[str | None, Field(max_length=200)] = None
+InstitutionType = Literal[
+    "universal_bank",
+    "rural_community_bank",
+    "savings_and_loans",
+    "microfinance",
+    "finance_house",
+    "credit_union",
+    "development_finance",
+    "other",
+]
+LicenceStatus = Literal["unverified", "verified", "expired", "revoked"]
+PartnershipStatus = Literal["none", "in_discussion", "partner"]
+PublicationStatus = Literal["draft", "published", "unpublished", "suspended"]
+
+WebUrl = Annotated[str, Field(max_length=300, pattern=r"^https?://[^\s/$.?#][^\s]*$")]
+Email = Annotated[str, Field(max_length=160, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
+Phone = Annotated[str, Field(max_length=40, pattern=r"^\+?[0-9][0-9 ()-]{5,38}$")]
+Hex = Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]
+Region = Literal[tuple(REGIONS)]  # type: ignore[valid-type]
 
 
-class LenderInput(LenderFields):
+class LenderDetails(CamelModel):
+    """What an administrator types from the institution's official information. Unknown values
+    stay empty: they are shown as "Not provided", never guessed."""
+
+    name: Text(160)
+    institution_type: InstitutionType
+    registered_name: Annotated[str | None, Field(max_length=200)] = None
+    description: Annotated[str | None, Field(max_length=2000)] = None
+    color: Hex = "#64748b"
+    website: WebUrl | None = None
+    email: Email | None = None
+    phone: Phone | None = None
+    address: Annotated[str | None, Field(max_length=500)] = None
+    region: Region | None = None
+    offers_agri_loans: bool | None = None
+    supported_regions: Annotated[list[Region], Field(max_length=16)] = []
+    licence_ref: Annotated[str | None, Field(max_length=120)] = None
+    regulator: Annotated[str | None, Field(max_length=120)] = None
+    partnership_status: PartnershipStatus = "none"
+
     @model_validator(mode="after")
-    def check(self) -> "LenderInput":
-        if self.max_months < self.min_months:
-            raise ValueError("Maximum months must be at least the minimum.")
+    def tidy(self) -> "LenderDetails":
+        for key in ("registered_name", "description", "address", "licence_ref", "regulator"):
+            value = getattr(self, key)
+            if isinstance(value, str):
+                setattr(self, key, value.strip() or None)
+        self.supported_regions = sorted(set(self.supported_regions))
         return self
 
 
+class LenderInput(LenderDetails):
+    pass
+
+
 class LenderPatch(CamelModel):
-    name: Text(80) | None = None
-    rate: float | None = None
-    max_amount: float | None = None
-    min_months: int | None = None
-    max_months: int | None = None
-    min_score: int | None = None
-    color: str | None = None
-    active: bool | None = None
+    """Only the fields sent change (the rest keep their saved values)."""
+
+    name: Text(160) | None = None
+    institution_type: InstitutionType | None = None
+    registered_name: str | None = None
     description: str | None = None
+    color: Hex | None = None
+    website: WebUrl | None = None
+    email: Email | None = None
+    phone: Phone | None = None
+    address: str | None = None
+    region: Region | None = None
+    offers_agri_loans: bool | None = None
+    supported_regions: list[Region] | None = None
+    licence_ref: str | None = None
+    regulator: str | None = None
+    partnership_status: PartnershipStatus | None = None
 
 
-class Lender(LenderFields):
+class LenderVerification(CamelModel):
+    """The result of checking the licence against the regulator's own register or notice."""
+
+    licence_status: LicenceStatus
+    # Where it was checked: the register's address, or the notice's title and date.
+    source: Annotated[str | None, Field(max_length=1000)] = None
+    checked_on: date
+    note: Annotated[str | None, Field(max_length=500)] = None
+
+    @model_validator(mode="after")
+    def check(self) -> "LenderVerification":
+        if self.licence_status != "unverified" and not (self.source or "").strip():
+            raise ValueError("Say where the licence was checked (the official register or notice).")
+        return self
+
+
+class LenderListing(CamelModel):
+    authorised: bool
+    # How it was authorised (e.g. "Email from the bank's communications office, 3 Nov 2026").
+    note: Annotated[str | None, Field(max_length=500)] = None
+
+    @model_validator(mode="after")
+    def check(self) -> "LenderListing":
+        if self.authorised and not (self.note or "").strip():
+            raise ValueError("Record how the public listing was authorised.")
+        return self
+
+
+class LenderSuspension(CamelModel):
+    reason: Text(300, min_length=5)
+
+
+class Lender(CamelModel):
+    """A lender as farmers see it: only published, verified, authorised institutions."""
+
     id: str
+    name: str
+    institution_type: InstitutionType
+    registered_name: str | None = None
+    description: str | None = None
+    color: str
+    # Relative to the API root; None when there is no logo.
+    logo_path: str | None = None
+    website: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    region: str | None = None
+    offers_agri_loans: bool | None = None
+    supported_regions: list[str] = []
+    licence_ref: str | None = None
+    regulator: str | None = None
+    licence_status: LicenceStatus
+    verification_source: str | None = None
+    verified_at: Timestamp | None = None
+    partnership_status: PartnershipStatus
+    updated_at: Timestamp | None = None
+
+
+class AdminLender(Lender):
+    """Everything an administrator manages, and why farmers can or can't see the lender."""
+
+    publication_status: PublicationStatus
+    listing_authorised: bool
+    listing_note: str | None = None
+    verification_note: str | None = None
+    verified_by: str | None = None
+    verification_expires_at: Timestamp | None = None
+    review_due: bool
+    suspension_reason: str | None = None
+    published_at: Timestamp | None = None
+    created_by: str | None = None
     created_at: Timestamp
+    updated_by: str | None = None
+    # True when farmers see it right now; otherwise `blockers` says why not.
+    listed: bool
+    blockers: list[str]
+    applications: int = 0
 
 
 # ---------- Market prices (evidence-backed observations) ----------

@@ -149,50 +149,6 @@ YIELD_MULTIPLIERS: dict[str, dict[str, float]] = {
     "season": {"major": 1.1, "minor": 1},
 }
 
-# The four original lending partners (the seed defaults of the lenders table).
-LOAN_PARTNERS: list[dict] = [
-    {
-        "id": "sinapi",
-        "name": "Sinapi Aba Trust",
-        "rate": 18,
-        "maxAmount": 100_000,
-        "minMonths": 6,
-        "maxMonths": 24,
-        "minScore": 550,
-        "color": "#10b981",
-    },
-    {
-        "id": "opportunity",
-        "name": "Opportunity Fund",
-        "rate": 22,
-        "maxAmount": 50_000,
-        "minMonths": 3,
-        "maxMonths": 12,
-        "minScore": 500,
-        "color": "#3b82f6",
-    },
-    {
-        "id": "agridev",
-        "name": "AgriDev Microfinance",
-        "rate": 15,
-        "maxAmount": 200_000,
-        "minMonths": 12,
-        "maxMonths": 36,
-        "minScore": 620,
-        "color": "#a855f7",
-    },
-    {
-        "id": "rural",
-        "name": "Rural Bank Consortium",
-        "rate": 20,
-        "maxAmount": 150_000,
-        "minMonths": 6,
-        "maxMonths": 24,
-        "minScore": 580,
-        "color": "#f5c451",
-    },
-]
-
 LOAN_PURPOSES = [
     "Seeds & Fertilizer",
     "Farm Equipment",

@@ -19,7 +19,6 @@ from app.models import (
     MomoTransaction,
     OnboardingDraft,
     Profile,
-    RiskFlag,
     User,
     UserSettings,
     VerificationRequest,
@@ -32,10 +31,8 @@ from app.services.mappers import announcement_out
 
 
 def under_review(db: DB, user_id: str) -> bool:
-    """Whether an admin confirmed a risk flag on this account (no details leave the console)."""
-    return bool(
-        db.scalar(select(func.count()).where(RiskFlag.user_id == user_id, RiskFlag.status == "confirmed"))
-    )
+    """Whether an admin confirmed a risk flag on this account (loans are paused meanwhile)."""
+    return lending.account_under_review(db, user_id)
 
 
 def credit_summary(db: DB, user_id: str) -> f.CreditSummary:
@@ -134,7 +131,12 @@ def export_data(db: DB, user_id: str) -> f.DataExport:
 
 
 def _clear_own_data(db: DB, user_id: str, *, keep_ai_history: bool = False) -> None:
-    models = (FarmRecord, MomoTransaction, UserSettings, OnboardingDraft)
+    # Bulk imports/clears cannot bypass the verified-entry protection.
+    from app.services.transactions import delete_entry
+    for model, kind in ((FarmRecord, "farm"), (MomoTransaction, "momo")):
+        for entry in db.scalars(select(model).where(model.user_id == user_id).with_for_update()).all():
+            delete_entry(db, kind, entry)
+    models = (UserSettings, OnboardingDraft)
     if not keep_ai_history:
         models += (Diagnosis, ChatMessage)
     for model in models:
@@ -163,9 +165,13 @@ def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
     db.add_all(FarmRecord(user_id=user_id, created_at=now, **r.model_dump()) for r in data.records)
     for t in data.momo:
         values = t.model_dump()
-        values["reference"] = values["reference"].strip() or "MOMO000000"
+        values["reference"] = (values["reference"] or "").strip() or None
         db.add(MomoTransaction(user_id=user_id, created_at=now, **values))
     db.flush()
+    from app.services.transactions import change_status
+    for model, kind in ((FarmRecord, "farm"), (MomoTransaction, "momo")):
+        for entry in db.scalars(select(model).where(model.user_id == user_id)).all():
+            change_status(db, entry, kind, "self_reported", initial=True, reason="Farmer imported an entry; not verified.")
     farm.save_settings(db, user_id, data.settings, commit=False)
     db.commit()
 

@@ -14,12 +14,11 @@ from tests.conftest import (
     admin_with_role,
     audit_count,
     new_client,
+    published_lender,
+    recorded_application,
     signup,
     super_admin,
 )
-
-LOAN = {"partnerId": "sinapi", "amount": 1000, "purpose": "Farm Equipment", "months": 12}
-
 
 def farmer_id(c) -> str:
     return c.get(f"{API}/auth/session").json()["userId"]
@@ -110,12 +109,23 @@ def test_ghana_card_review_flow():
     assert farmer.post(f"{API}/me/verifications", json={"kind": "ghanaCard", "value": "GHA-111111111-1"}).status_code == 201
 
 
-def test_loan_pipeline_with_the_demo_world():
+def test_the_demo_world_never_invents_lenders_or_applications():
     boss = super_admin()
     reset = boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
     assert reset.status_code == 200 and reset.json()["farmers"] == 60
-    apps = boss.get(f"{API}/admin/loan-applications", params={"status": "submitted"}).json()
-    app = apps[0]
+    assert boss.get(f"{API}/admin/lenders").json() == []
+    assert boss.get(f"{API}/admin/loan-applications").json() == []
+
+
+def test_loan_pipeline_on_recorded_applications():
+    boss = super_admin()
+    farmer = signup()
+    farmer.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
+    lender = published_lender(boss)
+    recorded_application(farmer_id(farmer), lender["id"])
+    recorded_application(farmer_id(farmer), lender["id"], status="under_review")
+    app = boss.get(f"{API}/admin/loan-applications", params={"status": "submitted"}).json()[0]
+    assert app["partnerName"] == lender["name"]
     r = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "disbursed"})
     assert r.status_code == 400 and "can’t move" in r.json()["detail"]
     moved = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "under_review"}).json()
@@ -124,13 +134,10 @@ def test_loan_pipeline_with_the_demo_world():
     approved = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "approved", "note": "Good records."})
     assert approved.status_code == 200
     review = boss.get(f"{API}/admin/loan-applications/{app['id']}/review").json()
-    assert review["farmerExists"] and {c["key"] for c in review["checks"]} >= {"records", "score", "term"}
+    assert review["farmerExists"] and {c["key"] for c in review["checks"]} == {"records", "affordability", "score"}
 
-    # A lender with applications under review can't be switched off, nor deleted.
-    reviewing = boss.get(f"{API}/admin/loan-applications", params={"status": "under_review"}).json()[0]
-    r = boss.post(f"{API}/admin/lenders/{reviewing['partnerId']}/toggle")
-    assert r.status_code == 400 and "under review" in r.json()["detail"]
-    assert boss.delete(f"{API}/admin/lenders/{reviewing['partnerId']}").status_code == 400
+    # A lender with applications on record can't be deleted (unpublish or suspend it instead).
+    assert boss.delete(f"{API}/admin/lenders/{lender['id']}").status_code == 400
 
     csv = boss.post(f"{API}/admin/loan-applications/export", json={})
     assert csv.status_code == 200 and csv.text.startswith("﻿Reference,Farmer")
@@ -188,6 +195,8 @@ def test_view_as_farmer_is_read_only_and_audited(db):
 def test_deleting_a_farmer_keeps_their_loan_history(db):
     boss = super_admin()
     boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
+    someone = boss.get(f"{API}/admin/farmers").json()[0]
+    recorded_application(someone["userId"], published_lender(boss)["id"])
     app = boss.get(f"{API}/admin/loan-applications").json()[0]
     farmer = boss.get(f"{API}/admin/farmers/{app['userId']}").json()
     assert boss.post(f"{API}/admin/farmers/{app['userId']}/delete", json={"confirmation": "someone else"}).status_code == 400

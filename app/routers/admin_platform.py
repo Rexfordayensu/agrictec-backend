@@ -28,7 +28,6 @@ from app.schemas.platform import (
     FeatureFlags,
     MarketPrice,
     Plan,
-    Weather,
 )
 from app.services import (
     admin_config,
@@ -144,10 +143,6 @@ def research_market_prices(body: ResearchQuery, ctx: allowed("content.manage")):
         }
     return {"status": "ready", "data": found}
 
-
-@router.put("/content/weather-override", response_model=Weather | None, tags=["Admin content"])
-def save_weather_override(body: Weather | None, ctx: allowed("content.manage"), db: Database):
-    return admin_config.save_weather_override(db, ctx.admin, body)
 
 
 @router.get("/content/crops", response_model=list[CropContent], tags=["Admin content"])

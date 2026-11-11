@@ -62,3 +62,4 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      # Private lender logos use DATABASE_URL; no separate bucket or token is needed.

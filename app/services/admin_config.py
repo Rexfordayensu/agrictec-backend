@@ -24,8 +24,8 @@ from app.schemas.platform import (
     MarketPrice,
     Plan,
     PlanList,
-    Weather,
 )
+from app.services import farm_alerts
 from app.services import platform_store as store
 from app.services import tools
 from app.services.farmer_data import load_farmers
@@ -202,21 +202,12 @@ def save_market_prices(db: DB, actor: Admin, prices: list[MarketPrice]) -> list[
             error = publication_error(price, today())
             if error:
                 raise AppError(error)
+    before = store.market_prices(db)
     _save_content(db, actor, store.MARKET, _dump(prices), "content.market", f"Updated {len(prices)} market prices")
-    return store.market_prices(db)
-
-
-def save_weather_override(db: DB, actor: Admin, weather: Weather | None) -> Weather | None:
-    """Kept for compatibility: farmers never see an override as live weather."""
-    value = weather.model_dump(mode="json", by_alias=True) if weather else None
-    summary = (
-        f"Set the weather to “{weather.description}”, {weather.temp:g}°C" if weather else "Cleared the weather override"
-    )
-    _save_content(
-        db, actor, store.WEATHER_OVERRIDE, value,
-        "content.weather_override" if weather else "content.weather_clear", summary,
-    )
-    return store.weather_override(db)
+    saved = store.market_prices(db)
+    # Farmers who grow a crop whose reviewed price moved 10% or more hear about it now.
+    farm_alerts.send_price_alerts(db, before, saved)
+    return saved
 
 
 def save_crops(db: DB, actor: Admin, crops: list[CropContent]) -> list[CropContent]:

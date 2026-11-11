@@ -1,5 +1,10 @@
 """Database rows to API shapes."""
 
+from datetime import datetime
+
+from sqlalchemy import select, func
+from sqlalchemy.orm import object_session
+
 from app import models as m
 from app.schemas import admin as a
 from app.schemas import farm as f
@@ -43,6 +48,21 @@ def profile_out(row: m.Profile | None, user_id: str) -> f.Profile:
     )
 
 
+def transaction_metadata(row, kind: str) -> dict:
+    db = object_session(row)
+    history = db.scalars(select(m.TransactionVerification).where(
+        m.TransactionVerification.record_kind == kind, m.TransactionVerification.record_id == row.id,
+        m.TransactionVerification.user_id == row.user_id,
+    ).order_by(m.TransactionVerification.at, m.TransactionVerification.id)).all() if db else []
+    count = db.scalar(select(func.count()).select_from(m.TransactionEvidenceLink).where(
+        m.TransactionEvidenceLink.record_kind == kind, m.TransactionEvidenceLink.record_id == row.id,
+    )) if db else 0
+    return dict(category=row.category, currency=row.currency, source_type=row.source_type,
+                verification_status=row.verification_status, payment_method=row.payment_method,
+                external_reference=row.external_reference, updated_at=row.updated_at,
+                evidence_count=count or 0, history=[f.StatusHistory.model_validate(h) for h in history])
+
+
 def record_out(row: m.FarmRecord) -> f.FarmRecord:
     return f.FarmRecord(
         id=row.id,
@@ -53,6 +73,8 @@ def record_out(row: m.FarmRecord) -> f.FarmRecord:
         amount=float(row.amount),
         date=row.date,
         notes=row.notes,
+        direction=row.direction,
+        **transaction_metadata(row, "farm"),
         created_at=row.created_at,
     )
 
@@ -65,6 +87,9 @@ def momo_out(row: m.MomoTransaction) -> f.MomoTransaction:
         counterparty=row.counterparty,
         amount=float(row.amount),
         reference=row.reference,
+        notes=row.notes,
+        reference_duplicate=row.reference_duplicate,
+        **transaction_metadata(row, "momo"),
         network=row.network,
         date=row.date,
         created_at=row.created_at,
@@ -94,6 +119,7 @@ def loan_out(row: m.LoanApplication) -> f.LoanApplication:
         reference=row.reference,
         user_id=row.user_id,
         partner_id=row.partner_id,
+        partner_name=row.lender.name if row.lender else None,
         amount=float(row.amount),
         months=row.months,
         purpose=row.purpose,
@@ -145,19 +171,77 @@ def announcement_out(row: m.Announcement) -> p.Announcement:
     )
 
 
+def _logo_path(row: m.Lender, area: str) -> str | None:
+    if not row.logo_key:
+        return None
+    version = int(row.logo_updated_at.timestamp()) if row.logo_updated_at else 0
+    return f"/{area}/lenders/{row.id}/logo?v={version}"
+
+
+def lender_logo_path(row: m.Lender) -> str | None:
+    """The farmer-facing logo URL (only served while the lender is listed)."""
+    return _logo_path(row, "platform")
+
+
+def _lender_public_fields(row: m.Lender, area: str) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "institution_type": row.institution_type,
+        "registered_name": row.registered_name,
+        "description": row.description,
+        "color": row.color,
+        "logo_path": _logo_path(row, area),
+        "website": row.website,
+        "email": row.email,
+        "phone": row.phone,
+        "address": row.address,
+        "region": row.region,
+        "offers_agri_loans": row.offers_agri_loans,
+        "supported_regions": list(row.supported_regions or []),
+        "licence_ref": row.licence_ref,
+        "regulator": row.regulator,
+        "licence_status": row.licence_status,
+        "verification_source": row.verification_source,
+        "verified_at": row.verified_at,
+        "partnership_status": row.partnership_status,
+        "updated_at": row.updated_at or row.created_at,
+    }
+
+
 def lender_out(row: m.Lender) -> p.Lender:
-    return p.Lender(
-        id=row.id,
-        name=row.name,
-        rate=row.rate,
-        max_amount=float(row.max_amount),
-        min_months=row.min_months,
-        max_months=row.max_months,
-        min_score=row.min_score,
-        color=row.color,
-        active=row.active,
-        description=row.description,
+    """The farmer-facing view (call it only for a lender that is listed)."""
+    return p.Lender(**_lender_public_fields(row, "platform"))
+
+
+def admin_lender_out(row: m.Lender, *, now: datetime, applications: int = 0) -> p.AdminLender:
+    from app.domain import lenders as rules
+
+    blockers = rules.listing_blockers(
+        publication_status=row.publication_status,
+        licence_status=row.licence_status,
+        last_checked=row.verified_at,
+        verification_source=row.verification_source,
+        listing_authorised=row.listing_authorised,
+        now=now,
+    )
+    return p.AdminLender(
+        **_lender_public_fields(row, "admin"),
+        publication_status=row.publication_status,
+        listing_authorised=row.listing_authorised,
+        listing_note=row.listing_note,
+        verification_note=row.verification_note,
+        verified_by=row.verified_by,
+        verification_expires_at=rules.verification_expires(row.verified_at),
+        review_due=rules.review_due(row.licence_status, row.verified_at, now),
+        suspension_reason=row.suspension_reason,
+        published_at=row.published_at,
+        created_by=row.created_by,
         created_at=row.created_at,
+        updated_by=row.updated_by,
+        listed=not blockers,
+        blockers=blockers,
+        applications=applications,
     )
 
 

@@ -119,7 +119,7 @@ def _duplicate_momo(subjects: list[RiskSubject]) -> list[DetectedRisk]:
             owner[t.id] = s.user_id
             every.append(t)
     flags = []
-    for reference, group in _group_by(every, lambda t: t.reference.strip().upper()).items():
+    for reference, group in _group_by(every, lambda t: (t.reference or "").strip().upper()).items():
         if len(group) < 2:
             continue
         accounts = list(dict.fromkeys(owner[t.id] for t in group))

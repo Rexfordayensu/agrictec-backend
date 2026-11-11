@@ -7,13 +7,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
 
 from app.core.audit import append_audit
-from app.core.errors import AppError, NotFound
+from app.core.errors import AppError, Forbidden, NotFound
 from app.core.events import bus
 from app.core.security import hash_password, new_token, token_digest
 from app.core.sessions import IMPERSONATION_HOURS, create_session, end_sessions_for
+from app.domain.csv import to_csv
 from app.domain.clock import now_utc
 from app.domain.credit import calculate_credit_score, score_label
-from app.domain.csv import to_csv
 from app.domain.passwords import make_temp_password
 from app.domain.verification import normalize_phone
 from app.models import (
@@ -27,7 +27,7 @@ from app.models import (
     User,
 )
 from app.schemas import admin as a
-from app.services import notifications, platform_store
+from app.services import notifications, platform_store, transactions
 from app.services.farmer_data import accounts, build_account, confirmed_risk_counts, display_name, load_farmer
 
 IMPERSONATION_TOKEN_SECONDS = 60
@@ -84,8 +84,9 @@ def get_detail(db: DB, user_id: str) -> a.FarmerDetail:
     risk = confirmed_risk_counts(db, [user_id]).get(user_id, 0)
     return a.FarmerDetail(
         account=build_account(data, config, risk),
-        records=data.records,
-        momo=data.momo,
+        records=[],
+        momo=[],
+        transaction_status_counts=transactions.status_counts(db, user_id),
         diagnoses=data.diagnoses,
         credit=calculate_credit_score(data.records, data.momo, data.profile, config),
         credit_config=config,
@@ -230,26 +231,8 @@ def reset_password(db: DB, actor: Admin, user_id: str) -> str:
 
 
 def export_records_csv(db: DB, actor: Admin, user_id: str) -> str:
-    """One farmer's records, newest first. Only the count is logged."""
-    data = load_farmer(db, user_id)
-    csv = to_csv(
-        data.records,
-        [
-            ("Date", lambda r: r.date.isoformat()),
-            ("Type", lambda r: r.type),
-            ("Description", lambda r: r.description),
-            ("Crop", lambda r: r.crop),
-            ("Amount (GHS)", lambda r: r.amount),
-            ("Notes", lambda r: r.notes or ""),
-        ],
-    )
-    append_audit(
-        db, actor, action="farmer.export_records", target_type="farmer", target_id=user_id,
-        summary=f"Exported {len(data.records)} records of {data.profile.name or data.user.email}",
-        after={"count": len(data.records)},
-    )
-    db.commit()
-    return csv
+    """Raw financial details are available only through the review queue."""
+    raise Forbidden("Financial entries can only be viewed in the transaction review queue.")
 
 
 def _yes_no(value: bool) -> str:

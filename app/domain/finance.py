@@ -2,29 +2,30 @@
 
 from collections.abc import Iterable
 from datetime import date
+from decimal import Decimal
 
 from app.domain.clock import add_months, months_between, today
 from app.domain.fmt import js_round, round_int
 from app.schemas.farm import FarmRecord
 
 
-def _income(r: FarmRecord) -> float:
-    return r.amount if r.type == "income" else 0
+def _income(r: FarmRecord) -> Decimal:
+    return Decimal(str(r.amount)) if r.type == "income" else Decimal("0")
 
 
-def _expense(r: FarmRecord) -> float:
-    return r.amount if r.type == "expense" else 0
+def _expense(r: FarmRecord) -> Decimal:
+    return Decimal(str(r.amount)) if r.type == "expense" else Decimal("0")
 
 
-def total_income(records: Iterable[FarmRecord]) -> float:
-    return sum(_income(r) for r in records)
+def total_income(records: Iterable[FarmRecord]) -> Decimal:
+    return sum((_income(r) for r in records), Decimal("0"))
 
 
-def total_expenses(records: Iterable[FarmRecord]) -> float:
-    return sum(_expense(r) for r in records)
+def total_expenses(records: Iterable[FarmRecord]) -> Decimal:
+    return sum((_expense(r) for r in records), Decimal("0"))
 
 
-def net_profit(records: list[FarmRecord]) -> float:
+def net_profit(records: list[FarmRecord]) -> Decimal:
     return total_income(records) - total_expenses(records)
 
 
@@ -33,7 +34,7 @@ def profit_margin(records: list[FarmRecord]) -> float:
     income = total_income(records)
     if income <= 0:
         return 0
-    return js_round(net_profit(records) / income * 100, 1)
+    return js_round(float(net_profit(records) / income * 100), 1)
 
 
 def annualized_net_profit(records: list[FarmRecord], now: date | None = None) -> int:
@@ -46,4 +47,4 @@ def annualized_net_profit(records: list[FarmRecord], now: date | None = None) ->
         return 0
     earliest = min(r.date for r in recent)
     months = min(12, max(1, months_between(now, earliest) + 1))
-    return round_int(net_profit(recent) / months * 12)
+    return round_int(float(net_profit(recent) / months * 12))

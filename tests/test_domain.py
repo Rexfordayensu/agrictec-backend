@@ -107,11 +107,12 @@ def test_loan_transitions_and_required_details():
 
 def test_permission_matrix_matches_the_spec():
     assert set(ROLE_PERMISSIONS["analyst"]) == {"overview.view", "farmers.view", "loans.view", "reports.export"}
+    assert can("admin", "transactions.review") and not can("support", "transactions.review")
     assert not can("admin", "credit.configure")
     assert not can("admin", "farmers.delete")
     assert can("support", "verifications.review") and not can("support", "reports.export")
     assert not can("farmer", "overview.view") and not can(None, "overview.view") and not can("toString", "x")
-    assert len(ROLE_PERMISSIONS["super_admin"]) == 19
+    assert len(ROLE_PERMISSIONS["super_admin"]) == 20
 
 
 def test_last_super_admin_is_protected():
@@ -152,9 +153,8 @@ def test_seed_world_matches_the_spec_and_plants_every_risk():
     assert len(world.farmers) == 60
     assert {f.profile.region for f in world.farmers} >= {"Ashanti", "Upper West", "Oti"}
     assert sum(1 for v in world.verifications if v["status"] == "pending") == 12
-    assert {a["status"] for a in world.applications} == {
-        "submitted", "under_review", "approved", "rejected", "disbursed", "repaid", "defaulted"
-    }
+    # No made-up applications: they would need made-up lenders.
+    assert world.applications == []
     rules = {r.rule for r in detect_risks([RiskSubject(f.user["id"], f.profile, f.records, f.momo) for f in world.farmers])}
     assert len(rules) == 7
     # Repeatable: the same day builds the same world.

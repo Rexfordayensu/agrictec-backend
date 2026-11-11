@@ -1,6 +1,6 @@
 """The farmer's own data, onboarding, verifications, loans and AI tools."""
 
-from tests.conftest import API, ONBOARDING, new_client, signup, super_admin
+from tests.conftest import API, ONBOARDING, new_client, published_lender, signup, super_admin
 
 RECORD = {"type": "income", "description": "Maize sales", "crop": "Maize", "amount": 1200, "date": "2026-10-01"}
 
@@ -22,10 +22,10 @@ def test_records_are_private_to_their_farmer():
     assert ama.delete(f"{API}/me/records/{created['id']}").status_code == 204
 
 
-def test_momo_reference_is_generated_and_the_browser_cannot_write_ai_history():
+def test_missing_momo_reference_stays_unknown_and_the_browser_cannot_write_ai_history():
     c = signup()
     t = c.post(f"{API}/me/momo", json={"direction": "in", "counterparty": "Buyer", "amount": 50, "date": "2026-10-02"}).json()
-    assert t["reference"].startswith("MOMO") and len(t["reference"]) == 10
+    assert t["reference"] is None
     # Diagnoses and the assistant conversation are written by the API only.
     fake = {"disease": "Healthy", "severity": "None", "confidence": 90, "treatment": "None needed",
             "date": "2026-10-01T10:00:00.000Z", "source": "ai", "imageThumb": "https://evil.example/pixel.png"}
@@ -101,19 +101,41 @@ def test_phone_check_needs_the_texted_code_and_a_new_number_loses_it(monkeypatch
 def test_loans_need_a_verified_card_and_every_rule():
     c = signup()
     c.post(f"{API}/me/onboarding/complete", json={**ONBOARDING, "ghanaCard": {"cardNumber": "GHA-123456789-0"}})
-    loan = {"partnerId": "sinapi", "amount": 1000, "purpose": "Farm Equipment", "months": 12}
+    boss = super_admin()
+    lender = published_lender(boss)
+    loan = {"partnerId": lender["id"], "amount": 1000, "purpose": "Farm Equipment", "months": 12}
     r = c.post(f"{API}/me/loans/applications", json=loan)
     assert r.status_code == 403 and "being reviewed" in r.json()["detail"]
 
-    boss = super_admin()
     request = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     assert boss.post(f"{API}/admin/verifications/{request['id']}/approve").status_code == 200
     assert c.get(f"{API}/me/profile").json()["ghanaCard"]["status"] == "verified"
 
     r = c.post(f"{API}/me/loans/applications", json=loan)
-    assert r.status_code == 400 and "farm records" in r.json()["detail"]
-    eligibility = c.post(f"{API}/me/loans/eligibility", json={"amount": 1000, "partnerId": "sinapi"}).json()
+    assert r.status_code == 400 and r.json()["code"] == "no_loan_products"
+    eligibility = c.post(f"{API}/me/loans/eligibility", json={"amount": 1000, "partnerId": lender["id"]}).json()
     assert not eligibility["eligible"] and {i["code"] for i in eligibility["issues"]} >= {"records", "score"}
+
+
+def test_an_account_under_review_cannot_apply_for_a_loan():
+    from app.db import SessionLocal
+    from app.models import RiskFlag, User
+
+    c = signup()
+    c.post(f"{API}/me/onboarding/complete", json={**ONBOARDING, "ghanaCard": {"cardNumber": "GHA-123456789-0"}})
+    boss = super_admin()
+    request = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
+    boss.post(f"{API}/admin/verifications/{request['id']}/approve")
+    with SessionLocal() as db:
+        user_id = db.query(User).filter(User.email == "ama@example.com").one().id
+        db.add(RiskFlag(user_id=user_id, rule="test", severity="high", description="Confirmed by an admin",
+                        related_ids=[], finding_key=f"test|{user_id}|", status="confirmed"))
+        db.commit()
+    assert c.get(f"{API}/me/credit").json()["underReview"] is True
+    loan = {"partnerId": published_lender(boss)["id"], "amount": 1000, "purpose": "Farm Equipment", "months": 12}
+    r = c.post(f"{API}/me/loans/applications", json=loan)
+    assert r.status_code == 403 and r.json()["code"] == "account_under_review"
+    assert c.get(f"{API}/me/loans/applications").json() == []
 
 
 def test_ai_tools_follow_the_plan_and_spend_credits():

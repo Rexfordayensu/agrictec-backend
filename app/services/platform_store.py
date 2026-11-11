@@ -19,7 +19,7 @@ from app.domain.defaults import (
     fresh,
 )
 from app.domain.plans import normalize_plans
-from app.models import CreditConfigVersion, Lender, PlatformSetting
+from app.models import CreditConfigVersion, PlatformSetting
 from app.schemas.platform import (
     AssistantKnowledgeItem,
     CreditConfig,
@@ -28,27 +28,24 @@ from app.schemas.platform import (
     FeatureFlags,
     MarketPrice,
     Plan,
-    Weather,
 )
-from app.services.mappers import credit_config_out, lender_out
+from app.services.mappers import credit_config_out
 
 # Keys of the platform_settings table. The content keys keep the frontend's storage names, so
 # "who saved it" metadata reads the same in both.
 FLAGS = "flags"
 PLANS = "plans"
 MARKET = "platform:content:market"
-WEATHER_OVERRIDE = "platform:content:weather-override"
 CROPS = "platform:content:crops"
 ASSISTANT_KB = "platform:content:assistant-kb"
 DIAGNOSES = "platform:content:diagnoses"
 SEEDED = "seeded"
-CONTENT_KEYS = [MARKET, WEATHER_OVERRIDE, CROPS, ASSISTANT_KB, DIAGNOSES]
+CONTENT_KEYS = [MARKET, CROPS, ASSISTANT_KB, DIAGNOSES]
 
 DEFAULTS: dict[str, Any] = {
     FLAGS: DEFAULT_FLAGS,
     PLANS: PLAN_CATALOG,
     MARKET: DEFAULT_MARKET_PRICES,
-    WEATHER_OVERRIDE: None,
     CROPS: DEFAULT_CROP_CONTENT,
     ASSISTANT_KB: DEFAULT_ASSISTANT_KB,
     DIAGNOSES: DEFAULT_DIAGNOSES,
@@ -117,24 +114,12 @@ def plan(db: DB, plan_id: str) -> Plan:
     return next(p for p in plans(db) if p.id == plan_id)
 
 
-def lenders(db: DB, include_inactive: bool = False) -> list:
-    query = select(Lender).order_by(Lender.created_at, Lender.id)
-    if not include_inactive:
-        query = query.where(Lender.active.is_(True))
-    return [lender_out(row) for row in db.scalars(query)]
-
-
 def market_prices(db: DB) -> list[MarketPrice]:
     prices = get_raw(db, MARKET) or []
     return [
         MarketPrice.model_validate({**price, "id": price.get("id") or f"legacy-market-{i}", "status": price.get("status") or "draft"})
         for i, price in enumerate(prices)
     ]
-
-
-def weather_override(db: DB) -> Weather | None:
-    value = get_raw(db, WEATHER_OVERRIDE)
-    return Weather.model_validate(value) if value else None
 
 
 def crops(db: DB) -> list[CropContent]:

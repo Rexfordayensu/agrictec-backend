@@ -1,7 +1,6 @@
 """A farmer's own data (records, MoMo, diagnoses, chat, settings, profile and onboarding).
 Every query is scoped to the signed-in farmer: nobody reads or changes another farmer's data."""
 
-import secrets
 from datetime import timedelta
 
 from sqlalchemy import delete, func, select
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session as DB
 from app.core.errors import AppError, NotFound
 from app.domain.clock import now_utc, today
 from app.domain.verification import normalize_phone
+from app.domain.transactions import transition
 from app.models import (
     Announcement,
     ChatMessage,
@@ -22,7 +22,7 @@ from app.models import (
     UserSettings,
 )
 from app.schemas import farm as f
-from app.services import mappers
+from app.services import mappers, transactions
 
 MAX_DIAGNOSES = 10
 MAX_CHAT_MESSAGES = 200
@@ -93,7 +93,7 @@ def _record(db: DB, user_id: str, record_id: str) -> FarmRecord:
     row = db.get(FarmRecord, record_id)
     if row is None or row.user_id != user_id:
         raise NotFound("Record not found")
-    return row
+    return transactions.entry(db, "farm", record_id, user_id, lock=True)
 
 
 def list_records(db: DB, user_id: str) -> list[f.FarmRecord]:
@@ -115,8 +115,12 @@ def _check_date(value) -> None:
 
 def create_record(db: DB, user_id: str, data: f.RecordInput) -> f.FarmRecord:
     _check_date(data.date)
-    row = FarmRecord(user_id=user_id, created_at=now_utc(), **_record_fields(data.model_dump()))
+    values = _record_fields(data.model_dump())
+    transactions.prepare_write(db, user_id, "farm", values, confirm_duplicate=data.confirm_duplicate)
+    row = FarmRecord(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
+    db.flush()
+    transactions.change_status(db, row, "farm", transition(None, "create"), initial=True)
     db.commit()
     return mappers.record_out(row)
 
@@ -125,6 +129,8 @@ def _record_fields(values: dict) -> dict:
     # Activities carry no amount.
     if values.get("type") == "activity":
         values["amount"] = 0
+        values["category"] = None
+        values["direction"] = None
     return values
 
 
@@ -132,20 +138,26 @@ def update_record(db: DB, user_id: str, record_id: str, patch: f.RecordPatch) ->
     row = _record(db, user_id, record_id)
     changes = patch.model_dump(exclude_unset=True)
     _check_date(changes.get("date"))
-    for key, value in _record_fields({"type": changes.get("type", row.type), **changes}).items():
+    changes = _record_fields(changes) if changes.get("type", row.type) == "activity" else changes
+    transactions.prepare_write(db, user_id, "farm", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    for key, value in changes.items():
+        if value is None and key in {"amount", "type", "date", "crop", "description", "source_type"}:
+            raise AppError(f"{key} cannot be empty.")
         setattr(row, key, value)
+    row.updated_at = now_utc()
     db.commit()
     return mappers.record_out(row)
 
 
 def delete_record(db: DB, user_id: str, record_id: str) -> None:
-    db.delete(_record(db, user_id, record_id))
+    transactions.delete_entry(db, "farm", _record(db, user_id, record_id))
     db.commit()
 
 
 def replace_records(db: DB, user_id: str, items: list[f.RecordInput]) -> list[f.FarmRecord]:
     """Replaces every record (sample data and "clear all")."""
-    db.execute(delete(FarmRecord).where(FarmRecord.user_id == user_id))
+    for existing in db.scalars(select(FarmRecord).where(FarmRecord.user_id == user_id).with_for_update()).all():
+        transactions.delete_entry(db, "farm", existing)
     now = now_utc()
     db.add_all(FarmRecord(user_id=user_id, created_at=now, **_record_fields(i.model_dump())) for i in items)
     db.commit()
@@ -159,12 +171,7 @@ def _momo(db: DB, user_id: str, momo_id: str) -> MomoTransaction:
     row = db.get(MomoTransaction, momo_id)
     if row is None or row.user_id != user_id:
         raise NotFound("Transaction not found")
-    return row
-
-
-def _reference(value: str) -> str:
-    """A blank reference becomes "MOMO" and six digits."""
-    return value.strip() or f"MOMO{secrets.randbelow(900_000) + 100_000}"
+    return transactions.entry(db, "momo", momo_id, user_id, lock=True)
 
 
 def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
@@ -179,9 +186,12 @@ def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
 def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
     _check_date(data.date)
     values = data.model_dump()
-    values["reference"] = _reference(values["reference"])
+    values["reference"] = (values["reference"] or "").strip() or None
+    transactions.prepare_write(db, user_id, "momo", values, confirm_duplicate=data.confirm_duplicate)
     row = MomoTransaction(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
+    db.flush()
+    transactions.change_status(db, row, "momo", transition(None, "create"), initial=True)
     db.commit()
     return mappers.momo_out(row)
 
@@ -189,23 +199,32 @@ def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
 def update_momo(db: DB, user_id: str, momo_id: str, patch: f.MomoPatch) -> f.MomoTransaction:
     row = _momo(db, user_id, momo_id)
     _check_date(patch.date)
-    for key, value in patch.model_dump(exclude_unset=True).items():
-        setattr(row, key, value.strip() if key == "reference" else value)
+    changes = patch.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        if value is None and key in {"amount", "direction", "date", "counterparty", "source_type"}:
+            raise AppError(f"{key} cannot be empty.")
+    transactions.prepare_write(db, user_id, "momo", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    if "reference" in changes and changes["reference"] != row.reference:
+        row.reference_duplicate = False
+    for key, value in changes.items():
+        setattr(row, key, value)
+    row.updated_at = now_utc()
     db.commit()
     return mappers.momo_out(row)
 
 
 def delete_momo(db: DB, user_id: str, momo_id: str) -> None:
-    db.delete(_momo(db, user_id, momo_id))
+    transactions.delete_entry(db, "momo", _momo(db, user_id, momo_id))
     db.commit()
 
 
 def replace_momo(db: DB, user_id: str, items: list[f.MomoInput]) -> list[f.MomoTransaction]:
-    db.execute(delete(MomoTransaction).where(MomoTransaction.user_id == user_id))
+    for existing in db.scalars(select(MomoTransaction).where(MomoTransaction.user_id == user_id).with_for_update()).all():
+        transactions.delete_entry(db, "momo", existing)
     now = now_utc()
     for item in items:
         values = item.model_dump()
-        values["reference"] = _reference(values["reference"])
+        values["reference"] = (values["reference"] or "").strip() or None
         db.add(MomoTransaction(user_id=user_id, created_at=now, **values))
     db.commit()
     return list_momo(db, user_id)

@@ -8,7 +8,6 @@ from app.domain.constants import (
     BASE_YIELD_PER_ACRE,
     CROP_EMOJI,
     CROP_TIPS,
-    LOAN_PARTNERS,
     MOCK_DIAGNOSES,
     PRICE_PER_TONNE,
 )
@@ -95,10 +94,6 @@ PLAN_CATALOG: list[dict] = [
         "aiCredits": None,
         "features": ["All available farmer tools", "Unlimited AI credits", "Unlimited PDF reports"],
     },
-]
-
-DEFAULT_LENDERS: list[dict] = [
-    {**partner, "active": True, "createdAt": BUILT_IN} for partner in LOAN_PARTNERS
 ]
 
 # No real prices have been sourced yet: administrators add evidence-backed observations.

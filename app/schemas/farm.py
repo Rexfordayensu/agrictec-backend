@@ -2,6 +2,7 @@
 
 import datetime as dt
 import re
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -205,58 +206,108 @@ class OnboardingDraft(OnboardingDraftInput):
 
 # ---------- Records, MoMo, diagnoses ----------
 
-RecordType = Literal["income", "expense", "activity"]
+RecordType = Literal["income", "expense", "activity", "financing"]
 MomoNetwork = Literal["MTN", "Telecel", "AirtelTigo"]
-Amount = Annotated[float, Field(ge=0, le=1_000_000_000)]
+Amount = Annotated[Decimal, Field(ge=0, le=1_000_000_000, max_digits=14, decimal_places=2)]
 
 
-class RecordInput(CamelModel):
+class TransactionInput(CamelModel):
+    category: Annotated[str | None, Field(max_length=40)] = None
+    payment_method: Annotated[str | None, Field(max_length=80)] = None
+    external_reference: Annotated[str | None, Field(max_length=120)] = None
+    source_type: Literal["farmer_entry", "statement_upload"] = "farmer_entry"
+    confirm_duplicate: bool = Field(default=False, exclude=True)
+
+    @field_validator("category", "payment_method", "external_reference", mode="before")
+    @classmethod
+    def empty_optional(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+
+class StatusHistory(CamelModel):
+    id: str
+    from_status: str | None
+    to_status: str
+    actor_type: str
+    actor_id: str
+    actor_name: str
+    reason: str | None
+    at: Timestamp
+
+
+class TransactionMetadata(CamelModel):
+    currency: str = "GHS"
+    verification_status: str = "self_reported"
+    evidence_count: int = 0
+    history: list[StatusHistory] = []
+    updated_at: Timestamp | None = None
+
+
+class RecordInput(TransactionInput):
     type: RecordType
     description: Text(300)
     crop: Crop
-    amount: Amount = 0
+    amount: Amount = Decimal("0")
     date: dt.date
     notes: Annotated[str | None, Field(max_length=1000)] = None
+    direction: Literal["in", "out"] | None = None
 
 
-class RecordPatch(CamelModel):
+class RecordPatch(TransactionInput):
     type: RecordType | None = None
     description: Text(300) | None = None
     crop: Crop | None = None
     amount: Amount | None = None
     date: dt.date | None = None
     notes: Annotated[str | None, Field(max_length=1000)] = None
+    direction: Literal["in", "out"] | None = None
 
 
-class FarmRecord(RecordInput):
+class FarmRecord(RecordInput, TransactionMetadata):
+    # Existing clients and score calculations retain the numeric API contract. Exact strings
+    # are returned by the new unified history and summary; database writes use Decimal.
+    amount: float = 0
     id: str
     user_id: str
     created_at: Timestamp
 
 
-class MomoInput(CamelModel):
+class MomoInput(TransactionInput):
     direction: Literal["in", "out"]
     counterparty: Text(120)
-    amount: Annotated[float, Field(gt=0, le=1_000_000_000)]
-    # Left blank, a "MOMO######" reference is generated.
-    reference: Annotated[str, Field(max_length=64)] = ""
+    amount: Annotated[Decimal, Field(gt=0, le=1_000_000_000, max_digits=14, decimal_places=2)]
+    reference: Annotated[str | None, Field(max_length=64)] = None
     network: MomoNetwork | None = None
     date: dt.date
+    notes: Annotated[str | None, Field(max_length=1000)] = None
+
+    @field_validator("reference", mode="before")
+    @classmethod
+    def empty_reference(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
 
 
-class MomoPatch(CamelModel):
+class MomoPatch(TransactionInput):
     direction: Literal["in", "out"] | None = None
     counterparty: Text(120) | None = None
-    amount: Annotated[float | None, Field(gt=0, le=1_000_000_000)] = None
-    reference: Annotated[str | None, Field(min_length=1, max_length=64)] = None
+    amount: Annotated[Decimal | None, Field(gt=0, le=1_000_000_000, max_digits=14, decimal_places=2)] = None
+    reference: Annotated[str | None, Field(max_length=64)] = None
     network: MomoNetwork | None = None
     date: dt.date | None = None
+    notes: Annotated[str | None, Field(max_length=1000)] = None
+
+    @field_validator("reference", mode="before")
+    @classmethod
+    def empty_reference(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
 
 
-class MomoTransaction(MomoInput):
+class MomoTransaction(MomoInput, TransactionMetadata):
+    amount: float
     id: str
     user_id: str
     created_at: Timestamp
+    reference_duplicate: bool = False
 
 
 DiagnosisSource = Literal["ai", "demo"]
@@ -382,6 +433,8 @@ class LoanApplication(CamelModel):
     reference: str
     user_id: str
     partner_id: str
+    # The lender's name at the time of reading (the lender may since be unlisted).
+    partner_name: str | None = None
     amount: float
     months: int
     purpose: str

@@ -15,11 +15,9 @@ from app.config import get_settings
 from app.core.audit import append_audit
 from app.core.security import fingerprint, hash_password
 from app.domain.clock import as_date, now_utc
-from app.domain.constants import LOAN_PERIODS, LOAN_PURPOSES, REGIONS
+from app.domain.constants import REGIONS
 from app.domain.constituencies import constituencies_of
-from app.domain.credit import calculate_credit_score
-from app.domain.defaults import DEFAULT_DIAGNOSES, DEFAULT_LENDERS
-from app.domain.loans import monthly_repayment
+from app.domain.defaults import DEFAULT_DIAGNOSES
 from app.domain.risk_rules import RiskSubject, detect_risks, risk_key
 from app.domain.verification import hash_ghana_card, mask_ghana_card, rejection_message
 from app.models import (
@@ -28,7 +26,6 @@ from app.models import (
     Announcement,
     Diagnosis,
     FarmRecord,
-    Lender,
     LoanApplication,
     LoanStatusEvent,
     MomoTransaction,
@@ -590,68 +587,9 @@ def build_world(now: datetime | None = None) -> SeedWorld:
             rejected_reason=rejection_message(latest["reason"], latest["note"]) if card_status == "rejected" else None,
         )
 
-    # ---------- Loan applications: 25 across every status, each with a valid history ----------
-    plans = (
-        [(["submitted"], (0, 6))] * 5
-        + [(["submitted", "under_review"], (5, 20))] * 4
-        + [(["submitted", "under_review", "approved"], (15, 40))] * 3
-        + [(["submitted", "rejected"], (5, 60))] * 2
-        + [(["submitted", "under_review", "rejected"], (10, 90))] * 2
-        + [(["submitted", "under_review", "approved", "disbursed"], (40, 120))] * 4
-        + [(["submitted", "under_review", "approved", "disbursed", "repaid"], (180, 300))] * 3
-        + [(["submitted", "under_review", "approved", "disbursed", "defaulted"], (150, 300))] * 2
-    )
-    notes = {
-        "under_review": "Documents received. Checking records with the lender.",
-        "approved": "Consistent records and income. Approved by the lender.",
-        "rejected": "Income records are too thin for the amount requested.",
-        "disbursed": "Funds sent to the farmer’s MoMo wallet.",
-        "repaid": "Fully repaid on schedule.",
-        "defaulted": "No repayment for three months after several reminders.",
-    }
-    applicants = rand.shuffle([x for x in farmers if x.user["status"] == "active" and len(x.records) >= 5])
-    used_references: set[str] = set()
+    # ---------- Loan applications: none. Applications need real lenders with published loan
+    # products, which only administrators add; the demo world never invents lenders.
     applications: list[dict] = []
-    for i, (path, (low, high)) in enumerate(plans[: len(applicants)]):
-        farmer = applicants[i]
-        lender = rand.pick(DEFAULT_LENDERS)
-        months = rand.pick([m for m in LOAN_PERIODS if lender["minMonths"] <= m <= lender["maxMonths"]])
-        amount = _round_to(rand.int(2000, min(lender["maxAmount"], 30000)), 500)
-        age = min(rand.int(low, high), max(0, days_since(farmer.user["created_at"]) - 1))
-        step = max(1, age // len(path))
-        created = at(age, 9, i)
-        reference = ""
-        while not reference or reference in used_references:
-            reference = f"APP-{created.year}-{rand.int(10000, 99999)}"
-        used_references.add(reference)
-        purpose = rand.pick(LOAN_PURPOSES)
-        history = []
-        for s, state in enumerate(path):
-            history.append(
-                {
-                    "status": state,
-                    "by": farmer.profile.name if s == 0 else reviewer("support" if state == "under_review" else "admin"),
-                    "at": created if s == 0 else at(max(0, age - s * step), 14, s),
-                    "note": notes.get(state),
-                }
-            )
-        applications.append(
-            {
-                "id": f"seed-app-{i + 1:02d}",
-                "reference": reference,
-                "user_id": farmer.user["id"],
-                "partner_id": lender["id"],
-                "amount": amount,
-                "months": months,
-                "purpose": purpose,
-                "rate": lender["rate"],
-                "monthly": monthly_repayment(amount, lender["rate"], months).monthly,
-                "score_at_application": calculate_credit_score(farmer.records, farmer.momo, farmer.profile).score,
-                "status": path[-1],
-                "created_at": created,
-                "history": history,
-            }
-        )
 
     # ---------- Risk flags: the real rules over the seeded data (finding the planted cases) ----------
     detected = detect_risks([RiskSubject(x.user["id"], x.profile, x.records, x.momo) for x in farmers])
@@ -777,15 +715,6 @@ def seed_demo(db: DB, *, force: bool = False) -> bool:
     farmer_hash = hash_password(DEMO_PASSWORDS["farmer"])
     ensure_super_admin(db)
     ensure_team(db)
-    for lender in DEFAULT_LENDERS:
-        if db.get(Lender, lender["id"]) is None:
-            db.add(
-                Lender(
-                    id=lender["id"], name=lender["name"], rate=lender["rate"], max_amount=lender["maxAmount"],
-                    min_months=lender["minMonths"], max_months=lender["maxMonths"], min_score=lender["minScore"],
-                    color=lender["color"], active=True, created_at=now_utc(),
-                )
-            )
 
     for x in world.farmers:
         db.add(User(**x.user, password_hash=farmer_hash, tags=x.tags))
@@ -805,8 +734,16 @@ def seed_demo(db: DB, *, force: bool = False) -> bool:
                 onboarding_completed_at=p.onboarding_completed_at,
             )
         )
-        db.add_all(FarmRecord(**r.model_dump()) for r in x.records)
-        db.add_all(MomoTransaction(**t.model_dump()) for t in x.momo)
+        db.add_all(FarmRecord(**{k:v for k,v in r.model_dump().items() if k in FarmRecord.__table__.columns}) for r in x.records)
+        seen_references = set()
+        for t in x.momo:
+            values = {k:v for k,v in t.model_dump().items() if k in MomoTransaction.__table__.columns}
+            reference = (t.reference or "").upper()
+            # Preserve the pre-existing demo's deliberately duplicated references; no real
+            # farmer write can set this migration-only flag.
+            values["reference_duplicate"] = bool(reference and reference in seen_references)
+            seen_references.add(reference)
+            db.add(MomoTransaction(**values))
         db.add_all(Diagnosis(user_id=p.user_id, created_at=d["date"], **d) for d in x.diagnoses)
         db.add_all(AdminNote(user_id=p.user_id, **n) for n in x.notes)
     db.add_all(VerificationRequest(**v) for v in world.verifications)

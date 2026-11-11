@@ -74,7 +74,7 @@ def _income_stability(records: list[FarmRecord]) -> float:
     expenses = total_expenses(records)
     if income >= expenses:
         return min(100, 50 + profit_margin(records))
-    return max(0, 50 - (expenses / income - 1) * 100)
+    return max(0, 50 - float(expenses / income - 1) * 100)
 
 
 def verification_checks(profile: Profile | None) -> list[bool]:

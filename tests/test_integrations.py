@@ -82,7 +82,8 @@ def test_weather_report_has_the_apps_shape():
     assert report["location"] == KUMASI and report["provider"] == "Open-Meteo"
     assert report["updatedAt"] == "2026-10-28T23:45:00.000Z"
     assert report["current"] == {"temp": 24.1, "description": "Clear sky", "humidity": 95, "rainMm": 0.0, "rainChance": 24, "windKph": 8.1}
-    assert report["daily"][1] == {"date": "2026-10-29", "description": "Showers", "minTemp": 23.0, "maxTemp": 30.1, "rainMm": 6.7, "rainChance": 96, "windKph": 10.0}
+    assert report["daily"][1] == {"date": "2026-10-29", "description": "Showers", "minTemp": 23.0, "maxTemp": 30.1, "rainMm": 6.7, "rainChance": 96, "windKph": 10.0,
+                                  "storm": False}
     assert report["upcoming"][1]["time"] == "2026-10-29T01:00:00.000Z"
     assert weather.coordinates_of(KUMASI) == weather.CITY_COORDS["kumasi"]
 
@@ -183,7 +184,8 @@ def test_openweather_answers_with_a_chance_of_rain_and_its_own_words():
     assert [(h["description"], h["rainChance"]) for h in report["upcoming"]] == [
         ("Light rain", 62), ("Haze", 20), ("Overcast clouds", 0), ("Clear sky", 10), ("Thunderstorm", 90)]
     today, tomorrow = report["daily"]
-    assert today == {"date": "2026-10-30", "description": "Light rain", "minTemp": 26.0, "maxTemp": 31.4, "rainMm": 0.8, "rainChance": 62, "windKph": 18.0}
+    assert today == {"date": "2026-10-30", "description": "Light rain", "minTemp": 26.0, "maxTemp": 31.4, "rainMm": 0.8,
+                     "rainChance": 62, "windKph": 18.0, "storm": False}
     assert (tomorrow["description"], tomorrow["minTemp"], tomorrow["maxTemp"], tomorrow["rainMm"], tomorrow["rainChance"]) == ("Thunderstorm", 25.0, 32.0, 8.2, 90)
 
 
@@ -631,7 +633,9 @@ def test_workers_starting_together_bootstrap_once():
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_truncate"))
+        conn.execute(text("ALTER TABLE transaction_verifications DISABLE TRIGGER transaction_history_no_truncate"))
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        conn.execute(text("ALTER TABLE transaction_verifications ENABLE TRIGGER transaction_history_no_truncate"))
         conn.execute(text("ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_truncate"))
     errors = []
     start = threading.Barrier(4)
@@ -652,6 +656,6 @@ def test_workers_starting_together_bootstrap_once():
     assert errors == []
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(CreditConfigVersion)) == 1
-        # A live platform starts with no lenders (only the demo world brings sample ones).
+        # A live platform starts with no lenders: administrators add the real ones.
         assert db.scalar(select(func.count()).select_from(Lender)) == 0
         assert db.scalar(select(func.count()).select_from(Admin)) == 1

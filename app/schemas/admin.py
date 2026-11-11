@@ -122,6 +122,7 @@ class FarmerDetail(CamelModel):
     account: FarmerAccount
     records: list[FarmRecord]
     momo: list[MomoTransaction]
+    transaction_status_counts: dict[str, int] = {}
     diagnoses: list[Diagnosis]
     credit: CreditScoreBreakdown
     credit_config: CreditConfig

@@ -358,6 +358,15 @@ Keep these points in mind:
     `claude-haiku-5-5` costs less, if their answers are good enough for you.
   - **Without a key,** the assistant answers from the knowledge base and the crop doctor is
     unavailable: it never makes up a diagnosis.
+- **Weather and price alerts** (app/services/farm_alerts.py) reach farmers who leave them on in
+  Settings > Preferences: in the app's inbox, and by SMS and email when those are configured.
+  - Weather, at 06:00 and 16:00 Ghana time (one worker per run): the 7-day forecast at the farm's
+    pin (or region). Heavy rain (20 mm+ in a day, 60%+ chance) or a thunderstorm in the next 3 days,
+    or a dry week (under 2 mm) in the zone's growing season. No forecast, no alert.
+  - Prices, when an admin publishes them: a reviewed price that moved 10%+ against the previous
+    observation of the same crop, unit and place, to farmers who grow that crop (a regional price
+    only to that region).
+  - Each alert goes out once (table `farm_alerts`).
 - **Scheduled reports** go out every Monday or every 1st of the month at 07:00 Ghana time, with
   the report's CSV attached (PDFs are drawn in the browser, so they can't be emailed).
   - A background thread in each worker checks every minute. It claims due rows with
@@ -365,3 +374,33 @@ Keep these points in mind:
   - Without email set up, a due report is recorded as failed and moves on to its next time.
 - **Several API workers** share live events through PostgreSQL `LISTEN/NOTIFY`
   (channel `agrictec_events`), so `uvicorn --workers N` or several hosts work without Redis.
+
+
+## Private file storage
+
+Lender logos are stored in the existing PostgreSQL database (`stored_files`), using
+`DATABASE_URL`. No Cloudflare account, bucket, R2 API token or separate file service is needed.
+The API still checks access before returning a logo. Uploads accept PNG, JPEG or WebP up to
+2 MB, then resize and re-encode them as WebP. File changes and lender changes commit together.
+Files are included in database backups and encrypted platform exports.
+
+Apply migration 0009 before running the updated API:
+
+```sh
+alembic upgrade head
+```
+
+For a new system, that is all the storage setup required. Existing R2 environment variables
+can be removed; the API ignores them. If logos were already uploaded to R2, copy them before
+switching the running API and removing the old credentials:
+
+```sh
+pip install -r requirements-r2-migration.txt
+python -m app.scripts.migrate_r2_logos
+```
+
+The one-time command reads the old `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
+and `R2_BUCKET` from the environment or `.env`. It copies only referenced logos missing from
+PostgreSQL, preserves their keys and URLs, verifies their bytes, and never deletes R2 objects.
+It can be rerun after a failure. After a successful copy, deploy the new API, check the logos,
+and remove the old credentials. Alternatively, re-upload the original logos in the admin console.

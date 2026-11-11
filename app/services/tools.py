@@ -90,11 +90,17 @@ def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
         )
     if ctx.weather:
         w = ctx.weather
+        # Claude is told only what the provider gave: a missing figure is said to be missing.
+        if w.get("rainChance") is not None:
+            rain = f"rain chance {w['rainChance']}%"
+        elif w.get("rainMm") is not None:
+            rain = f"rain {w['rainMm']} mm this hour (no rain probability given)"
+        else:
+            rain = "no rain figures given by the weather source"
+        wind = f"wind {w['windKph']} km/h" if w.get("windKph") is not None else "wind not given"
         lines.append(
             f"- Weather at the farm now: {w.get('description')}, {w.get('temp')}°C, humidity "
-            f"{w.get('humidity')}%, "
-            + (f"rain chance {w['rainChance']}%" if w.get("rainChance") is not None else f"rain {w.get('rainMm') or 0} mm this hour (no rain probability given)")
-            + f", wind {w.get('windKph')} km/h"
+            f"{w.get('humidity')}%, {rain}, {wind}"
             + ("; a storm is forecast" if w.get("storm") else "")
         )
     own = {c.lower() for c in ctx.primary_crops}
