@@ -1,12 +1,12 @@
 """Admin sign-in, sessions and the lockout (services/admin/admin-auth.service.ts).
 
-The lockout counts failures per email AND visitor address: five in a row lock that pair for five
-minutes. Someone else guessing at an admin's email only locks themselves out, never the admin
-(the per-address rate limit on /admin/auth/login caps guessing from any one address too).
+The lockout (app/services/login_lockout.py) counts failures per email AND visitor address: five
+in a row lock that pair for five minutes. Someone else guessing at an admin's email only locks
+themselves out, never the admin (the per-address rate limit on /admin/auth/login caps guessing
+from any one address too).
 
 Farmer and admin sessions are separate: neither one ever signs the other out."""
 
-import hashlib
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -14,18 +14,16 @@ from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
 from app.core.audit import append_audit
-from app.core.errors import SESSION_ENDED, AppError, Forbidden, Locked, Unauthorized
+from app.core.errors import SESSION_ENDED, AppError, Forbidden, Unauthorized
 from app.core.security import hash_password, verify_password
 from app.core.sessions import create_session, end_session
 from app.domain.clock import now_utc
 from app.domain.passwords import password_problem
 from app.domain.permissions import permissions_of
-from app.models import Admin, AuthSession, LoginLockout
-from app.schemas.admin import AdminSession, LockStatus
+from app.models import Admin, AuthSession
+from app.schemas.admin import AdminSession
+from app.services import login_lockout
 from app.services.mappers import admin_out
-
-MAX_LOGIN_ATTEMPTS = 5
-LOCKOUT_MINUTES = 5
 
 
 def idle_timeout() -> timedelta:
@@ -45,52 +43,7 @@ def session_out(admin: Admin, record: AuthSession) -> AdminSession:
     )
 
 
-# ---------- Lockout ----------
-
-
-def _countdown(until: datetime, now: datetime) -> str:
-    total = max(0, int(-(-(until - now).total_seconds() // 1)))
-    return f"{total // 60}:{total % 60:02d}"
-
-
-def locked_message(until: datetime, now: datetime) -> str:
-    return f"Too many attempts. Try again in {_countdown(until, now)}."
-
-
-def lockout_key(email: str, client: str) -> str:
-    """The lockout row for one email from one address (hashed: both are personal data)."""
-    return hashlib.sha256(f"{email.strip().lower()}|{client}".encode()).hexdigest()
-
-
-def lock_status(db: DB, key: str, now: datetime | None = None) -> LockStatus:
-    now = now or now_utc()
-    row = db.get(LoginLockout, key)
-    if row and row.locked_until and row.locked_until > now:
-        return LockStatus(locked=True, until=row.locked_until, attempts_left=0)
-    # An expired lock starts a fresh set of attempts.
-    failures = 0 if not row or row.locked_until else row.failures
-    return LockStatus(locked=False, attempts_left=max(0, MAX_LOGIN_ATTEMPTS - failures))
-
-
-def _fail_attempt(db: DB, key: str, now: datetime) -> LockStatus:
-    current = lock_status(db, key, now)
-    if current.locked:
-        return current
-    failures = MAX_LOGIN_ATTEMPTS - current.attempts_left + 1
-    row = db.get(LoginLockout, key) or LoginLockout(key=key)
-    row.failures = failures
-    row.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES) if failures >= MAX_LOGIN_ATTEMPTS else None
-    db.merge(row)
-    if row.locked_until:
-        return LockStatus(locked=True, until=row.locked_until, attempts_left=0)
-    return LockStatus(locked=False, attempts_left=MAX_LOGIN_ATTEMPTS - failures)
-
-
 # ---------- Sessions ----------
-
-
-def _locked(until: datetime, now: datetime) -> Locked:
-    return Locked(locked_message(until, now), code="locked", extra={"until": until.isoformat()})
 
 
 def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple[str, AdminSession]:
@@ -98,29 +51,23 @@ def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple
     reveals which accounts exist. `client` is the visitor's address (the lockout's other half)."""
     now = now_utc()
     address = email.strip().lower()
-    key = lockout_key(address, client)
-    lock = lock_status(db, key, now)
+    key = login_lockout.lockout_key(address, client)
+    lock = login_lockout.lock_status(db, key, now)
     if lock.locked and lock.until:
-        raise _locked(lock.until, now)
+        raise login_lockout.locked_error(lock.until, now)
 
     admin = db.scalars(select(Admin).where(Admin.email == address)).first()
     if not verify_password(password, admin.password_hash if admin else None) or not admin:
-        after = _fail_attempt(db, key, now)
+        after = login_lockout.fail_attempt(db, key, now)
         db.commit()
         if after.locked and after.until:
-            raise _locked(after.until, now)
-        left = after.attempts_left
-        raise Unauthorized(
-            f"Incorrect email or password. {left} attempt{'' if left == 1 else 's'} left.",
-            code="bad_credentials",
-        )
+            raise login_lockout.locked_error(after.until, now)
+        raise Unauthorized("Incorrect email or password.", code="bad_credentials")
     # Only checked after the password matched, so it reveals nothing to a guesser.
     if admin.status != "active":
         raise Forbidden("This admin account is disabled.", code="admin_disabled")
 
-    row = db.get(LoginLockout, key)
-    if row:
-        db.delete(row)
+    login_lockout.clear(db, key)
     admin.last_login_at = now
     token, record = create_session(
         db, "admin", admin_id=admin.id, ttl=timedelta(hours=get_settings().admin_session_hours)

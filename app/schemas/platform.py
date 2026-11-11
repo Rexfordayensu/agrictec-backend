@@ -362,7 +362,9 @@ class CropContent(CamelModel):
     crop: YieldCrop
     emoji: Text(8)
     yield_per_acre: Annotated[float, Field(gt=0, le=1000)]
-    price_per_tonne: Annotated[float, Field(gt=0, le=1_000_000)]
+    # No longer used: yield revenue comes from published market prices only. Kept optional so
+    # crop data saved before is still valid.
+    price_per_tonne: Annotated[float | None, Field(gt=0, le=1_000_000)] = None
     tips: Annotated[list[Text(240)], Field(max_length=10)]
 
 

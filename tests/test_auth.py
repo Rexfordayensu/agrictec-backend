@@ -77,11 +77,12 @@ def test_admin_must_change_the_demo_password_first():
 
 def test_admin_lockout_after_five_failures():
     c = new_client()
-    for left in (4, 3, 2, 1):
+    for _ in range(4):
         r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "wrong"})
-        assert r.status_code == 401 and f"{left} attempt" in r.json()["detail"]
+        # A wrong password says only that; no countdown of attempts.
+        assert r.status_code == 401 and r.json()["detail"] == "Incorrect email or password."
     r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "wrong"})
-    assert r.status_code == 423 and "Too many attempts" in r.json()["detail"]
+    assert r.status_code == 423 and r.json()["detail"].startswith("Too many attempts. You can sign in again at ")
     assert r.json()["until"]  # for the sign-in page's countdown
     # Even the right password is refused while locked.
     r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
@@ -144,3 +145,41 @@ def test_a_farmer_unused_for_a_week_is_signed_out(db):
     assert r.status_code == 401 and r.json()["code"] == "session_expired"
     # Ended for good: it doesn't come back.
     assert c.get(f"{API}/auth/session").status_code == 401
+
+
+def test_farmer_lockout_after_five_wrong_passwords_says_when_to_try_again():
+    signup("ama@example.com", "password123")
+    c = new_client()
+    for _ in range(4):
+        r = c.post(f"{API}/auth/login", json={"email": "ama@example.com", "password": "wrong-password"})
+        assert r.status_code == 401 and r.json()["detail"] == "Incorrect email or password"
+    r = c.post(f"{API}/auth/login", json={"email": "ama@example.com", "password": "wrong-password"})
+    assert r.status_code == 423 and r.json()["code"] == "locked"
+    assert r.json()["detail"].startswith("Too many attempts. You can sign in again at ")
+    assert r.json()["until"]
+    # Even the right password is refused until then.
+    assert c.post(f"{API}/auth/login", json={"email": "ama@example.com", "password": "password123"}).status_code == 423
+
+
+def test_a_right_password_clears_the_farmers_failures():
+    signup("kofi@example.com", "password123")
+    c = new_client()
+    for _ in range(4):
+        c.post(f"{API}/auth/login", json={"email": "kofi@example.com", "password": "wrong-password"})
+    assert c.post(f"{API}/auth/login", json={"email": "kofi@example.com", "password": "password123"}).status_code == 200
+    for _ in range(4):  # a fresh set of five
+        r = c.post(f"{API}/auth/login", json={"email": "kofi@example.com", "password": "wrong-password"})
+        assert r.status_code == 401
+
+
+def test_the_lock_message_names_the_minute_it_ends_never_earlier():
+    from datetime import UTC, datetime
+
+    from app.services.login_lockout import locked_message
+
+    now = datetime(2026, 11, 11, 14, 30, 20, tzinfo=UTC)
+    until = datetime(2026, 11, 11, 14, 35, 20, tzinfo=UTC)
+    assert locked_message(until, now) == "Too many attempts. You can sign in again at 14:36 GMT (in 5 minutes)."
+    on_the_minute = datetime(2026, 11, 11, 14, 35, tzinfo=UTC)
+    assert "at 14:35 GMT (in 5 minutes)" in locked_message(on_the_minute, datetime(2026, 11, 11, 14, 30, tzinfo=UTC))
+    assert "(in 1 minute)" in locked_message(on_the_minute, datetime(2026, 11, 11, 14, 34, 30, tzinfo=UTC))

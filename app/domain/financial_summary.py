@@ -137,6 +137,11 @@ def build(farm: list, momo: list, months: int, today: date) -> dict:
     )
 
     active_months = {row.date.strftime("%Y-%m") for row in [*farm_now, *momo_now]}
+    # The chart starts when the farmer started recording (any farm record or MoMo entry, never a
+    # future one): no empty months before the first entry. Empty months after it are shown.
+    recorded = [row.date for row in [*farm, *momo] if row.date <= end]
+    first_recorded = min(recorded) if recorded else None
+    chart_from = (max(start, month_start(first_recorded)) if first_recorded else month_start(end)).strftime("%Y-%m")
     stamps = [row.created_at for row in [*farm, *momo] if isinstance(getattr(row, "created_at", None), datetime)]
     net = income.total - expenses.total
     return {
@@ -154,7 +159,9 @@ def build(farm: list, momo: list, months: int, today: date) -> dict:
                 "net": money(v["income"] - v["expenses"]),
             }
             for key, v in monthly.items()
+            if key >= chart_from
         ],
+        "firstRecordedOn": first_recorded.isoformat() if first_recorded else None,
         "counts": {
             "byStatus": dict(counts),
             "total": entries,

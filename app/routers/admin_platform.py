@@ -354,8 +354,10 @@ def builder_export(body: a.BuilderSpec, ctx: allowed("reports.export"), db: Data
 
 @router.get("/system/status", tags=["Admin system"])
 def system_status(ctx: allowed("overview.view"), db: Database):
-    """When the demo world was seeded (None if never)."""
-    return {"seededAt": platform_store.get_raw(db, platform_store.SEEDED)}
+    """When the demo world was seeded (None if never). The demo world exists only outside
+    production: there `demoData` is false and nothing about it is shown."""
+    demo = get_settings().demo_data_allowed
+    return {"seededAt": platform_store.get_raw(db, platform_store.SEEDED) if demo else None, "demoData": demo}
 
 
 @router.post("/system/backup", tags=["Admin system"])

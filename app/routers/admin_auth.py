@@ -21,8 +21,8 @@ Signed = Annotated[AdminContext, Depends(admin_context)]
 
 @router.post("/login", response_model=a.AdminSignedIn, dependencies=[Depends(rate_limit("admin-login", 30, 900))])
 def sign_in(body: Credentials, request: Request, response: Response, db: Database):
-    """Five failed attempts from one address lock that email there for five minutes (423, with
-    `until`). An admin on a temporary password signs in with mustChangePassword true and can only
+    """Five wrong passwords from one address lock that email there for five minutes (423, with
+    `until`); a wrong one says only that it's wrong. An admin on a temporary password signs in with mustChangePassword true and can only
     change it."""
     token, session = admin_auth.sign_in(db, body.email, body.password, client_ip(request))
     set_admin_cookies(response, token, session.admin.role)

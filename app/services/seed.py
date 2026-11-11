@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
@@ -655,6 +655,15 @@ def ensure_team(db: DB, now: datetime | None = None) -> None:
                 created_at=now - timedelta(days=days_ago), created_by=SUPER_ADMIN_ID, password_hash=team_hash,
             )
         )
+
+
+DEMO_TEAM_IDS = tuple(member[0] for member in TEAM if member[0] != SUPER_ADMIN_ID)
+
+
+def disable_demo_team(db: DB) -> None:
+    """The demo team members' password is published in this file: on the live platform they are
+    disabled (not deleted, so the audit trail keeps their names)."""
+    db.execute(update(Admin).where(Admin.id.in_(DEMO_TEAM_IDS)).values(status="disabled"))
 
 
 def ensure_super_admin(db: DB) -> None:

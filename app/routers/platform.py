@@ -28,6 +28,13 @@ from app.schemas.products import LoanProduct
 from app.services import account, lending, loan_products, platform_store, subscriptions
 
 router = APIRouter(tags=["Platform"])
+
+
+def _payments_mode() -> str:
+    settings = get_settings()
+    if settings.payments_live:
+        return "paystack"
+    return "demo" if settings.demo_data_allowed else "off"
 Database = Annotated[DB, Depends(get_db)]
 
 
@@ -56,8 +63,9 @@ def snapshot(db: Database):
         "knowledge": platform_store.assistant_kb(db),
         "diagnoses": [d for d in platform_store.diagnoses(db) if d.active],
         "announcements": account.live_announcements(db),
-        # "paystack": real payments; "demo": simulated (development only).
-        "payments": {"mode": "paystack" if get_settings().payments_live else "demo"},
+        # "paystack": Paystack (test or live key); "demo": simulated, never outside development;
+        # "off": no Paystack key on the live platform, so no paid plan can be bought yet.
+        "payments": {"mode": _payments_mode()},
         # "claude" when the assistant and crop doctor use Claude, "off" for the built-in rules.
         "ai": {"mode": "claude" if get_settings().ai_enabled else "off"},
     }

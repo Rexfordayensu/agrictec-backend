@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, FarmerContext, admin_context, farmer_context
 from app.core.errors import AppError
-from app.core.ratelimit import rate_limit
+from app.core.ratelimit import client_ip, rate_limit
 from app.core.sessions import GUEST_COOKIE, IMPERSONATION_HEADER, end_session, find_session, set_cookie
 from app.db import get_db
 from app.domain.clock import now_utc
@@ -43,16 +43,21 @@ def sign_up(body: SignUp, response: Response, db: DB = Depends(get_db)):
 
 
 @router.post("/login", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
-def sign_in(body: Credentials, response: Response, db: DB = Depends(get_db)):
+def sign_in(body: Credentials, request: Request, response: Response, db: DB = Depends(get_db)):
     """409 with code "password_change_required" after an admin reset: call
-    /auth/replace-temporary-password with the temporary and the new password."""
-    token, session = auth.sign_in(db, body.email, body.password)
+    /auth/replace-temporary-password with the temporary and the new password. Five wrong passwords
+    from one address lock that email there for five minutes (423, with `until`)."""
+    token, session = auth.sign_in(db, body.email, body.password, client_ip(request))
     return _signed_in(db, response, token, session)
 
 
 @router.post("/replace-temporary-password", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
-def replace_temporary_password(body: ReplaceTemporaryPassword, response: Response, db: DB = Depends(get_db)):
-    token, session = auth.replace_temporary_password(db, body.email, body.temporary_password, body.new_password)
+def replace_temporary_password(
+    body: ReplaceTemporaryPassword, request: Request, response: Response, db: DB = Depends(get_db)
+):
+    token, session = auth.replace_temporary_password(
+        db, body.email, body.temporary_password, body.new_password, client_ip(request)
+    )
     return _signed_in(db, response, token, session)
 
 

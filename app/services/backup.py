@@ -326,6 +326,12 @@ def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password
                     actor_type="system", actor_id="platform-restore", actor_name="AgriCtec",
                     reason="Restored the recorded status from a platform backup; no new verification inferred.", at=now_utc(),
                 ))
+    if not get_settings().demo_data_allowed:
+        # A backup made in development can hold the demo world: it never reaches the live platform.
+        seed.clear_seed_data(db)
+        seed.disable_demo_team(db)
+        db.execute(delete(PlatformSetting).where(PlatformSetting.key == platform_store.SEEDED))
+        db.flush()
     after = {"rows": sum(len(r) for r in parsed.values()), **counts(db)}
     append_audit(db, actor, action="system.import", target_type="system", summary="Imported a platform backup",
                  before=before, after=after)
@@ -355,7 +361,7 @@ def reset_demo(db: DB, actor: Admin, confirmation: str, password: str) -> dict:
     """Rebuilds the seeded demo world and the default settings and content. Real accounts, the
     team and the audit trail are kept. Never in production (it would add made-up farmers to the
     live platform), and it needs the admin's own password."""
-    if get_settings().environment == "production":
+    if not get_settings().demo_data_allowed:
         raise Forbidden("The demo data can't be reset on the live platform.", code="production")
     if confirmation != RESET_CONFIRMATION:
         raise AppError(f"Type {RESET_CONFIRMATION} to confirm the reset.")

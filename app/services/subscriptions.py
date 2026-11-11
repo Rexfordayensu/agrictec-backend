@@ -110,7 +110,7 @@ def activate(db: DB, user_id: str, plan_id: str, method: str) -> SubscriptionSna
     now = now_utc()
     plan = _available_plan(db, plan_id)
     settings = get_settings()
-    if plan_id != "free" and (settings.payments_live or settings.environment == "production"):
+    if plan_id != "free" and (settings.payments_live or not settings.demo_data_allowed):
         raise Forbidden("Pay for this plan through checkout.", code="payment_required")
     row = db.get(Subscription, user_id) or Subscription(user_id=user_id)
     if plan_id == "free":

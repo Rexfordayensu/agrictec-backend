@@ -175,6 +175,11 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def demo_data_allowed(self) -> bool:
+        """The demo world and simulated payments: local development and the tests only."""
+        return self.environment != "production"
+
+    @property
     def configured_admin_email(self) -> str | None:
         return self.admin_email.strip().lower() if self.admin_email else None
 

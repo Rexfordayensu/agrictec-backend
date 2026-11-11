@@ -9,7 +9,6 @@ from app.domain.constants import (
     CROP_EMOJI,
     CROP_TIPS,
     MOCK_DIAGNOSES,
-    PRICE_PER_TONNE,
 )
 
 BUILT_IN = "2026-01-01T00:00:00.000Z"
@@ -104,7 +103,6 @@ DEFAULT_CROP_CONTENT: list[dict] = [
         "crop": crop,
         "emoji": emoji,
         "yieldPerAcre": BASE_YIELD_PER_ACRE[crop],
-        "pricePerTonne": PRICE_PER_TONNE[crop],
         "tips": list(CROP_TIPS[crop]),
     }
     for crop, emoji in CROP_EMOJI.items()

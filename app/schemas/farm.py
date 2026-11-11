@@ -531,8 +531,11 @@ class YieldResult(CamelModel):
     expected: float
     high: float
     per_acre: float
-    revenue: float
-    price_per_tonne: float
+    # Only from a published market price for the crop; None when there isn't one.
+    revenue: float | None = None
+    price_per_tonne: float | None = None
+    price_market: str | None = None
+    price_observed_at: dt.date | None = None
     insight: str
     tips: list[str]
 
