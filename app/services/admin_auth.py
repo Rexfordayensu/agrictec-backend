@@ -1,7 +1,12 @@
 """Admin sign-in, sessions and the lockout (services/admin/admin-auth.service.ts).
 
+The lockout counts failures per email AND visitor address: five in a row lock that pair for five
+minutes. Someone else guessing at an admin's email only locks themselves out, never the admin
+(the per-address rate limit on /admin/auth/login caps guessing from any one address too).
+
 Farmer and admin sessions are separate: neither one ever signs the other out."""
 
+import hashlib
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -52,9 +57,14 @@ def locked_message(until: datetime, now: datetime) -> str:
     return f"Too many attempts. Try again in {_countdown(until, now)}."
 
 
-def lock_status(db: DB, email: str, now: datetime | None = None) -> LockStatus:
+def lockout_key(email: str, client: str) -> str:
+    """The lockout row for one email from one address (hashed: both are personal data)."""
+    return hashlib.sha256(f"{email.strip().lower()}|{client}".encode()).hexdigest()
+
+
+def lock_status(db: DB, key: str, now: datetime | None = None) -> LockStatus:
     now = now or now_utc()
-    row = db.get(LoginLockout, email.strip().lower())
+    row = db.get(LoginLockout, key)
     if row and row.locked_until and row.locked_until > now:
         return LockStatus(locked=True, until=row.locked_until, attempts_left=0)
     # An expired lock starts a fresh set of attempts.
@@ -79,21 +89,26 @@ def _fail_attempt(db: DB, key: str, now: datetime) -> LockStatus:
 # ---------- Sessions ----------
 
 
-def sign_in(db: DB, email: str, password: str) -> tuple[str, AdminSession]:
+def _locked(until: datetime, now: datetime) -> Locked:
+    return Locked(locked_message(until, now), code="locked", extra={"until": until.isoformat()})
+
+
+def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple[str, AdminSession]:
     """A farmer's email gets the same generic error as a wrong password, so the page never
-    reveals which accounts exist."""
+    reveals which accounts exist. `client` is the visitor's address (the lockout's other half)."""
     now = now_utc()
-    key = email.strip().lower()
+    address = email.strip().lower()
+    key = lockout_key(address, client)
     lock = lock_status(db, key, now)
     if lock.locked and lock.until:
-        raise Locked(locked_message(lock.until, now), code="locked")
+        raise _locked(lock.until, now)
 
-    admin = db.scalars(select(Admin).where(Admin.email == key)).first()
+    admin = db.scalars(select(Admin).where(Admin.email == address)).first()
     if not verify_password(password, admin.password_hash if admin else None) or not admin:
         after = _fail_attempt(db, key, now)
         db.commit()
         if after.locked and after.until:
-            raise Locked(locked_message(after.until, now), code="locked")
+            raise _locked(after.until, now)
         left = after.attempts_left
         raise Unauthorized(
             f"Incorrect email or password. {left} attempt{'' if left == 1 else 's'} left.",

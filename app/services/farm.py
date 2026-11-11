@@ -1,14 +1,15 @@
 """A farmer's own data (records, MoMo, diagnoses, chat, settings, profile and onboarding).
 Every query is scoped to the signed-in farmer: nobody reads or changes another farmer's data."""
 
-import secrets
+from datetime import timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as DB
 
 from app.core.errors import AppError, NotFound
-from app.domain.clock import now_utc
+from app.domain.clock import now_utc, today
 from app.domain.verification import normalize_phone
+from app.domain.transactions import transition
 from app.models import (
     Announcement,
     ChatMessage,
@@ -21,7 +22,7 @@ from app.models import (
     UserSettings,
 )
 from app.schemas import farm as f
-from app.services import mappers
+from app.services import mappers, transactions
 
 MAX_DIAGNOSES = 10
 MAX_CHAT_MESSAGES = 200
@@ -61,8 +62,11 @@ def apply_profile_fields(row: Profile, data: f.ProfileFields) -> None:
     row.region = data.region
     row.constituency = data.constituency
     row.community = _text(data.community)
-    if data.gps is None and row.gps_lat is not None:
-        # Removing the map pin un-verifies the farm location.
+    moved = data.gps is not None and row.gps_lat is not None and (
+        abs(data.gps.lat - row.gps_lat) >= 0.00006 or abs(data.gps.lng - (row.gps_lng or 0)) >= 0.00006
+    )
+    if (data.gps is None and row.gps_lat is not None) or moved:
+        # Removing or moving the map pin un-verifies the farm location (an admin reviews it again).
         row.verified_location = False
     row.gps_lat = data.gps.lat if data.gps else None
     row.gps_lng = data.gps.lng if data.gps else None
@@ -89,7 +93,7 @@ def _record(db: DB, user_id: str, record_id: str) -> FarmRecord:
     row = db.get(FarmRecord, record_id)
     if row is None or row.user_id != user_id:
         raise NotFound("Record not found")
-    return row
+    return transactions.entry(db, "farm", record_id, user_id, lock=True)
 
 
 def list_records(db: DB, user_id: str) -> list[f.FarmRecord]:
@@ -102,9 +106,21 @@ def list_records(db: DB, user_id: str) -> list[f.FarmRecord]:
     return [mappers.record_out(r) for r in rows]
 
 
+def _check_date(value) -> None:
+    """An entry describes something that happened: at most a day ahead (time zones). A date in
+    the future would sit in the score's history window before it ever happened."""
+    if value is not None and value > today() + timedelta(days=1):
+        raise AppError("The date can't be in the future.")
+
+
 def create_record(db: DB, user_id: str, data: f.RecordInput) -> f.FarmRecord:
-    row = FarmRecord(user_id=user_id, created_at=now_utc(), **_record_fields(data.model_dump()))
+    _check_date(data.date)
+    values = _record_fields(data.model_dump())
+    transactions.prepare_write(db, user_id, "farm", values, confirm_duplicate=data.confirm_duplicate)
+    row = FarmRecord(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
+    db.flush()
+    transactions.change_status(db, row, "farm", transition(None, "create"), initial=True)
     db.commit()
     return mappers.record_out(row)
 
@@ -113,26 +129,35 @@ def _record_fields(values: dict) -> dict:
     # Activities carry no amount.
     if values.get("type") == "activity":
         values["amount"] = 0
+        values["category"] = None
+        values["direction"] = None
     return values
 
 
 def update_record(db: DB, user_id: str, record_id: str, patch: f.RecordPatch) -> f.FarmRecord:
     row = _record(db, user_id, record_id)
     changes = patch.model_dump(exclude_unset=True)
-    for key, value in _record_fields({"type": changes.get("type", row.type), **changes}).items():
+    _check_date(changes.get("date"))
+    changes = _record_fields(changes) if changes.get("type", row.type) == "activity" else changes
+    transactions.prepare_write(db, user_id, "farm", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    for key, value in changes.items():
+        if value is None and key in {"amount", "type", "date", "crop", "description", "source_type"}:
+            raise AppError(f"{key} cannot be empty.")
         setattr(row, key, value)
+    row.updated_at = now_utc()
     db.commit()
     return mappers.record_out(row)
 
 
 def delete_record(db: DB, user_id: str, record_id: str) -> None:
-    db.delete(_record(db, user_id, record_id))
+    transactions.delete_entry(db, "farm", _record(db, user_id, record_id))
     db.commit()
 
 
 def replace_records(db: DB, user_id: str, items: list[f.RecordInput]) -> list[f.FarmRecord]:
     """Replaces every record (sample data and "clear all")."""
-    db.execute(delete(FarmRecord).where(FarmRecord.user_id == user_id))
+    for existing in db.scalars(select(FarmRecord).where(FarmRecord.user_id == user_id).with_for_update()).all():
+        transactions.delete_entry(db, "farm", existing)
     now = now_utc()
     db.add_all(FarmRecord(user_id=user_id, created_at=now, **_record_fields(i.model_dump())) for i in items)
     db.commit()
@@ -146,12 +171,7 @@ def _momo(db: DB, user_id: str, momo_id: str) -> MomoTransaction:
     row = db.get(MomoTransaction, momo_id)
     if row is None or row.user_id != user_id:
         raise NotFound("Transaction not found")
-    return row
-
-
-def _reference(value: str) -> str:
-    """A blank reference becomes "MOMO" and six digits."""
-    return value.strip() or f"MOMO{secrets.randbelow(900_000) + 100_000}"
+    return transactions.entry(db, "momo", momo_id, user_id, lock=True)
 
 
 def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
@@ -164,33 +184,47 @@ def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
 
 
 def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
+    _check_date(data.date)
     values = data.model_dump()
-    values["reference"] = _reference(values["reference"])
+    values["reference"] = (values["reference"] or "").strip() or None
+    transactions.prepare_write(db, user_id, "momo", values, confirm_duplicate=data.confirm_duplicate)
     row = MomoTransaction(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
+    db.flush()
+    transactions.change_status(db, row, "momo", transition(None, "create"), initial=True)
     db.commit()
     return mappers.momo_out(row)
 
 
 def update_momo(db: DB, user_id: str, momo_id: str, patch: f.MomoPatch) -> f.MomoTransaction:
     row = _momo(db, user_id, momo_id)
-    for key, value in patch.model_dump(exclude_unset=True).items():
-        setattr(row, key, value.strip() if key == "reference" else value)
+    _check_date(patch.date)
+    changes = patch.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        if value is None and key in {"amount", "direction", "date", "counterparty", "source_type"}:
+            raise AppError(f"{key} cannot be empty.")
+    transactions.prepare_write(db, user_id, "momo", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    if "reference" in changes and changes["reference"] != row.reference:
+        row.reference_duplicate = False
+    for key, value in changes.items():
+        setattr(row, key, value)
+    row.updated_at = now_utc()
     db.commit()
     return mappers.momo_out(row)
 
 
 def delete_momo(db: DB, user_id: str, momo_id: str) -> None:
-    db.delete(_momo(db, user_id, momo_id))
+    transactions.delete_entry(db, "momo", _momo(db, user_id, momo_id))
     db.commit()
 
 
 def replace_momo(db: DB, user_id: str, items: list[f.MomoInput]) -> list[f.MomoTransaction]:
-    db.execute(delete(MomoTransaction).where(MomoTransaction.user_id == user_id))
+    for existing in db.scalars(select(MomoTransaction).where(MomoTransaction.user_id == user_id).with_for_update()).all():
+        transactions.delete_entry(db, "momo", existing)
     now = now_utc()
     for item in items:
         values = item.model_dump()
-        values["reference"] = _reference(values["reference"])
+        values["reference"] = (values["reference"] or "").strip() or None
         db.add(MomoTransaction(user_id=user_id, created_at=now, **values))
     db.commit()
     return list_momo(db, user_id)
@@ -242,29 +276,24 @@ def list_chat(db: DB, user_id: str) -> list[f.ChatMessage]:
     return [f.ChatMessage(id=r.id, role=r.role, content=r.content, created_at=r.created_at) for r in rows]
 
 
-def save_chat(db: DB, user_id: str, messages: list[f.ChatMessage], commit: bool = True) -> None:
-    """Replaces the conversation (the most recent messages are kept)."""
-    db.execute(delete(ChatMessage).where(ChatMessage.user_id == user_id))
-    db.flush()
-    kept = messages[-MAX_CHAT_MESSAGES:]
-    seen: set[str] = set()
-    for position, m in enumerate(kept):
-        if m.id in seen:
-            raise AppError("Each chat message needs its own ID.")
-        seen.add(m.id)
+def append_chat(db: DB, user_id: str, messages: list[f.ChatMessage]) -> None:
+    """Adds messages the API wrote (the assistant's question and answer) to the end of the
+    conversation, keeping the most recent MAX_CHAT_MESSAGES. Not committed: the caller commits
+    with the credit it spent. The browser never writes the conversation."""
+    last = db.scalar(select(func.max(ChatMessage.position)).where(ChatMessage.user_id == user_id))
+    position = -1 if last is None else last
+    for m in messages:
+        position += 1
         content = m.content if isinstance(m.content, str) else m.content.model_dump(by_alias=True, exclude_none=True)
         db.add(
             ChatMessage(
-                id=m.id,
-                user_id=user_id,
-                position=position,
-                role=m.role,
-                content=content,
-                created_at=m.created_at,
+                id=m.id, user_id=user_id, position=position, role=m.role, content=content, created_at=m.created_at
             )
         )
-    if commit:
-        db.commit()
+    db.flush()
+    cutoff = position - MAX_CHAT_MESSAGES
+    if cutoff >= 0:
+        db.execute(delete(ChatMessage).where(ChatMessage.user_id == user_id, ChatMessage.position <= cutoff))
 
 
 def clear_chat(db: DB, user_id: str) -> None:

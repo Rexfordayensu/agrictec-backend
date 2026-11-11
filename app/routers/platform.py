@@ -7,7 +7,7 @@ import time
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session as DB
@@ -24,7 +24,8 @@ from app.domain.market import published_prices
 from app.integrations import paystack
 from app.integrations import weather as weather_api
 from app.schemas.platform import CreditConfig, FeatureFlags, Lender, Plan
-from app.services import account, platform_store, subscriptions
+from app.schemas.products import LoanProduct
+from app.services import account, lending, loan_products, platform_store, subscriptions
 
 router = APIRouter(tags=["Platform"])
 Database = Annotated[DB, Depends(get_db)]
@@ -41,15 +42,16 @@ def health(db: Database):
 def snapshot(db: Database):
     """Every platform setting the farmer app reads, in one call. Only published, reviewed market
     prices are included."""
-    lenders = platform_store.lenders(db, include_inactive=True)
     return {
         "creditConfig": platform_store.credit_config(db),
         "flags": platform_store.flags(db),
         "plans": platform_store.plans(db),
-        "lenders": [l for l in lenders if l.active],
-        "allLenders": lenders,
+        # Only listed lenders: published, licence verified recently, listing authorised. Never
+        # placeholders: an empty list means no lender is available yet.
+        "lenders": lending.listed_lenders(db),
+        # Published products of listed lenders, latest version (the same for every farmer).
+        "loanProducts": [p.model_dump(mode="json", by_alias=True) for p in loan_products.listed_products(db)],
         "marketPrices": published_prices(platform_store.market_prices(db)),
-        "weatherOverride": platform_store.weather_override(db),
         "crops": platform_store.crops(db),
         "knowledge": platform_store.assistant_kb(db),
         "diagnoses": [d for d in platform_store.diagnoses(db) if d.active],
@@ -104,8 +106,33 @@ def plans(db: Database):
 
 
 @router.get("/platform/lenders", response_model=list[Lender])
-def lenders(db: Database, include_inactive: Annotated[bool, Query(alias="includeInactive")] = False):
-    return platform_store.lenders(db, include_inactive)
+def lenders(db: Database):
+    """The marketplace: the same published, verified lenders for every farmer."""
+    return lending.listed_lenders(db)
+
+
+@router.get("/platform/lenders/{lender_id}", response_model=Lender)
+def lender(lender_id: str, db: Database):
+    return lending.listed_lender(db, lender_id)
+
+
+@router.get("/platform/loan-products", response_model=list[LoanProduct])
+def listed_products(db: Database):
+    """Published products of listed lenders, each at its latest published version."""
+    return loan_products.listed_products(db)
+
+
+@router.get("/platform/loan-products/{product_id}", response_model=LoanProduct)
+def listed_product(product_id: str, db: Database):
+    return loan_products.listed_product(db, product_id)
+
+
+@router.get("/platform/lenders/{lender_id}/logo", include_in_schema=False)
+def lender_logo(lender_id: str, db: Database):
+    """A listed lender's logo (the URL carries a version, so it can be cached for long)."""
+    data, media_type = lending.logo(db, lender_id, listed_only=True)
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/platform/market/prices")

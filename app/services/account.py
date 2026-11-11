@@ -19,7 +19,6 @@ from app.models import (
     MomoTransaction,
     OnboardingDraft,
     Profile,
-    RiskFlag,
     User,
     UserSettings,
     VerificationRequest,
@@ -32,10 +31,8 @@ from app.services.mappers import announcement_out
 
 
 def under_review(db: DB, user_id: str) -> bool:
-    """Whether an admin confirmed a risk flag on this account (no details leave the console)."""
-    return bool(
-        db.scalar(select(func.count()).where(RiskFlag.user_id == user_id, RiskFlag.status == "confirmed"))
-    )
+    """Whether an admin confirmed a risk flag on this account (loans are paused meanwhile)."""
+    return lending.account_under_review(db, user_id)
 
 
 def credit_summary(db: DB, user_id: str) -> f.CreditSummary:
@@ -90,23 +87,21 @@ def my_announcements(db: DB, user_id: str) -> list[AnnouncementOut]:
 
 
 def complete_onboarding(db: DB, user: User, data: f.OnboardingComplete) -> f.Profile:
-    """Saves the whole profile and opens the app: location verified when a pin is set, and a
-    Ghana Card sent to the verifications queue (pending until an admin approves it)."""
+    """Saves the whole profile and opens the app. The farm's pin and a Ghana Card go to the
+    verifications queue (pending until an admin approves them)."""
     row = farm.get_profile_row(db, user.id)
     name, email = row.name, row.email
     farm.apply_profile_fields(row, data.profile)
     row.name = name or data.profile.name.strip()
     row.email = email or data.profile.email.strip() or ("" if user.is_guest else user.email)
-    if row.gps_lat is not None:
-        row.verified_location = True
+    db.flush()
+    if row.gps_lat is not None and not row.verified_location:
+        verifications.queue_location(db, user.id, f"{row.gps_lat:.4f}, {row.gps_lng:.4f}")
 
     card = data.ghana_card
-    if card and (card.card_number or (card.masked and card.hash)):
+    if card and card.card_number:
         if row.ghana_card_status not in ("pending", "verified"):
-            masked, value_hash = (
-                verifications.card_from_number(card.card_number) if card.card_number else (card.masked, card.hash)
-            )
-            verifications.queue_card(db, user.id, masked, value_hash)
+            verifications.queue_full_card(db, user.id, card.card_number)
     elif row.ghana_card_status in ("not_provided", "rejected"):
         row.ghana_card_status = "not_provided"
         row.ghana_card_masked = row.ghana_card_hash = row.ghana_card_rejected_reason = None
@@ -135,20 +130,28 @@ def export_data(db: DB, user_id: str) -> f.DataExport:
     )
 
 
-def _clear_own_data(db: DB, user_id: str) -> None:
-    for model in (FarmRecord, MomoTransaction, Diagnosis, ChatMessage, UserSettings, OnboardingDraft):
+def _clear_own_data(db: DB, user_id: str, *, keep_ai_history: bool = False) -> None:
+    # Bulk imports/clears cannot bypass the verified-entry protection.
+    from app.services.transactions import delete_entry
+    for model, kind in ((FarmRecord, "farm"), (MomoTransaction, "momo")):
+        for entry in db.scalars(select(model).where(model.user_id == user_id).with_for_update()).all():
+            delete_entry(db, kind, entry)
+    models = (UserSettings, OnboardingDraft)
+    if not keep_ai_history:
+        models += (Diagnosis, ChatMessage)
+    for model in models:
         db.execute(delete(model).where(model.user_id == user_id))
 
 
 def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
-    """Replaces the farmer's records, MoMo, diagnoses, chat, settings and editable profile, all
-    or nothing. The Ghana Card, verifications, admin notes and loan applications are kept: they
-    are the platform's records, not the farmer's."""
+    """Replaces the farmer's records, MoMo, settings and editable profile, all or nothing. The
+    Ghana Card, verifications, admin notes, loan applications, diagnoses and the assistant
+    conversation are kept: they are written by the platform, never taken from a file."""
     try:
         fields = f.ProfileFields.model_validate(data.profile)
     except ValueError as error:
         raise AppError("The profile in this file is invalid.") from error
-    _clear_own_data(db, user_id)
+    _clear_own_data(db, user_id, keep_ai_history=True)
     now = now_utc()
     row = farm.get_profile_row(db, user_id)
     farm.apply_profile_fields(row, fields)
@@ -162,11 +165,13 @@ def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
     db.add_all(FarmRecord(user_id=user_id, created_at=now, **r.model_dump()) for r in data.records)
     for t in data.momo:
         values = t.model_dump()
-        values["reference"] = values["reference"].strip() or "MOMO000000"
+        values["reference"] = (values["reference"] or "").strip() or None
         db.add(MomoTransaction(user_id=user_id, created_at=now, **values))
-    db.add_all(Diagnosis(user_id=user_id, created_at=now, **d.model_dump()) for d in data.diagnoses)
     db.flush()
-    farm.save_chat(db, user_id, data.chat, commit=False)
+    from app.services.transactions import change_status
+    for model, kind in ((FarmRecord, "farm"), (MomoTransaction, "momo")):
+        for entry in db.scalars(select(model).where(model.user_id == user_id)).all():
+            change_status(db, entry, kind, "self_reported", initial=True, reason="Farmer imported an entry; not verified.")
     farm.save_settings(db, user_id, data.settings, commit=False)
     db.commit()
 

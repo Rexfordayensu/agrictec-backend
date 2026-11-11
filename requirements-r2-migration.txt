@@ -1,0 +1,2 @@
+# Optional one-time import only; not needed by the API.
+boto3==1.44.0

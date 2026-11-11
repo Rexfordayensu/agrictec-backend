@@ -5,20 +5,23 @@ exported or replaced. Password hashes never leave the server: restored accounts 
 password they have now (an account that only exists in the backup can't sign in until an admin
 resets its password). A restore is all or nothing: one transaction."""
 
+import base64
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import Date, DateTime, Numeric, delete, func, insert, select, text
+from sqlalchemy import Date, DateTime, LargeBinary, Numeric, delete, func, insert, select, text
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
+from app.core import backup_crypto
 from app.core.audit import append_audit
-from app.core.errors import AppError
+from app.core.errors import AppError, Forbidden
 from app.core.events import bus
 from app.core.security import verify_password
 from app.domain.clock import iso, now_utc, parse_iso
-from app.domain.defaults import DEFAULT_CREDIT_CONFIG, DEFAULT_LENDERS
+from app.domain.defaults import DEFAULT_CREDIT_CONFIG
 from app.models import (
     Admin,
     AdminNote,
@@ -30,6 +33,9 @@ from app.models import (
     DismissedAnnouncement,
     FarmRecord,
     Lender,
+    LoanProduct,
+    LoanProductVersion,
+    LoanRequirement,
     LoanApplication,
     LoanStatusEvent,
     MomoTransaction,
@@ -40,6 +46,10 @@ from app.models import (
     Profile,
     RiskFlag,
     Subscription,
+    StoredFile,
+    TransactionEvidence,
+    TransactionEvidenceLink,
+    TransactionVerification,
     User,
     UserSettings,
     VerificationRequest,
@@ -54,6 +64,7 @@ BACKUP_VERSION = 2
 
 # Parents before children (restored in this order, cleared in reverse).
 TABLES = [
+    StoredFile,
     User,
     Profile,
     FarmRecord,
@@ -72,10 +83,16 @@ TABLES = [
     CreditConfigVersion,
     PlatformSetting,
     Lender,
+    LoanProduct,
+    LoanProductVersion,
+    LoanRequirement,
     LoanApplication,
     LoanStatusEvent,
     VerificationRequest,
     RiskFlag,
+    TransactionEvidence,
+    TransactionEvidenceLink,
+    TransactionVerification,
 ]
 BY_NAME = {model.__tablename__: model for model in TABLES}
 # Never in a file: the hash of a password, and the generated ID of a history row.
@@ -88,24 +105,28 @@ def _columns(model) -> list:
 
 
 def _to_json(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
     if isinstance(value, datetime):
         return iso(value)
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return float(value)
+        return str(value)
     return value
 
 
 def _from_json(column, value: Any) -> Any:
     if value is None:
         return None
+    if isinstance(column.type, LargeBinary):
+        return base64.b64decode(value, validate=True)
     if isinstance(column.type, DateTime):
         return parse_iso(value)
     if isinstance(column.type, Date):
         return date.fromisoformat(value)
     if isinstance(column.type, Numeric):
-        return float(value)
+        return Decimal(str(value))
     return value
 
 
@@ -123,7 +144,11 @@ def counts(db: DB) -> dict[str, int]:
     }
 
 
-def export_all(db: DB, actor: Admin) -> dict:
+def export_all(db: DB, actor: Admin, passphrase: str) -> dict:
+    """The whole platform, encrypted with the admin's passphrase (app/core/backup_crypto.py)."""
+    problem = backup_crypto.passphrase_problem(passphrase)
+    if problem:
+        raise AppError(problem)
     data = {}
     for model in TABLES:
         columns = _columns(model)
@@ -132,10 +157,61 @@ def export_all(db: DB, actor: Admin) -> dict:
     total = sum(len(rows) for rows in data.values())
     append_audit(
         db, actor, action="system.export", target_type="system",
-        summary=f"Exported a platform backup ({len(data)} tables, {total} rows)", after={"tables": len(data), "rows": total},
+        summary=f"Exported an encrypted platform backup ({len(data)} tables, {total} rows)",
+        after={"tables": len(data), "rows": total},
     )
+    exported_at = iso(now_utc())
+    payload = {
+        "app": "agrictec", "kind": "platform-backup", "version": BACKUP_VERSION, "exportedAt": exported_at, "data": data,
+    }
+    envelope = backup_crypto.encrypt(payload, passphrase, exported_at)
     db.commit()
-    return {"app": "agrictec", "kind": "platform-backup", "version": BACKUP_VERSION, "exportedAt": iso(now_utc()), "data": data}
+    return envelope
+
+
+def open_backup(document: dict, passphrase: str = "") -> dict:
+    """The backup inside a file: decrypted with its passphrase, or, for a file made before backups
+    were encrypted, as it is."""
+    if backup_crypto.is_encrypted(document):
+        return backup_crypto.decrypt(document, passphrase)
+    return document
+
+
+# Lenders in backups made before real lender management (migration 0007) carried made-up
+# terms. Restoring one never brings those terms back, nor a sample lender, nor a listing.
+LEGACY_LENDER_FIELDS = {"rate", "max_amount", "min_months", "max_months", "min_score", "active"}
+SAMPLE_LENDERS = {
+    "sinapi": "Sinapi Aba Trust",
+    "opportunity": "Opportunity Fund",
+    "agridev": "AgriDev Microfinance",
+    "rural": "Rural Bank Consortium",
+}
+
+
+def _upgrade_lenders(rows: list, applications: Any) -> list:
+    used = {
+        a.get("partner_id") for a in applications if isinstance(a, dict)
+    } if isinstance(applications, list) else set()
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or not LEGACY_LENDER_FIELDS & set(row):
+            out.append(row)
+            continue
+        sample = SAMPLE_LENDERS.get(row.get("id")) == row.get("name")
+        if sample and row.get("id") not in used:
+            continue
+        upgraded = {k: v for k, v in row.items() if k not in LEGACY_LENDER_FIELDS}
+        upgraded.update(
+            institution_type=upgraded.get("institution_type") or "other",
+            licence_status="unverified",
+            listing_authorised=False,
+            partnership_status="none",
+            supported_regions=[],
+            publication_status="suspended" if sample else "unpublished",
+            suspension_reason="Sample lender from development: its terms were never real." if sample else None,
+        )
+        out.append(upgraded)
+    return out
 
 
 def _parse(backup: dict) -> dict[str, list[dict]]:
@@ -151,6 +227,8 @@ def _parse(backup: dict) -> dict[str, list[dict]]:
     if unknown:
         raise AppError(f"“{unknown[0]}” is not a table this server restores.")
     parsed: dict[str, list[dict]] = {}
+    if isinstance(data.get("lenders"), list):
+        data = {**data, "lenders": _upgrade_lenders(data["lenders"], data.get("loan_applications"))}
     for name, rows in data.items():
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             raise AppError(f"“{name}” must be a list of rows.")
@@ -183,8 +261,9 @@ def _check_documents(parsed: dict[str, list[dict]]) -> None:
         raise AppError(f"The backup's settings are invalid: {error}") from error
 
 
-def summarize(backup: dict) -> dict:
+def summarize(document: dict, passphrase: str = "") -> dict:
     """What a backup holds, shown before restoring ("60 farmers, 25 applications...")."""
+    backup = open_backup(document, passphrase)
     parsed = _parse(backup)
     size = {name: len(rows) for name, rows in parsed.items()}
     return {
@@ -201,21 +280,30 @@ def summarize(backup: dict) -> dict:
     }
 
 
-def import_all(db: DB, actor: Admin, backup: dict, confirmation: str) -> dict:
+def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password: str, passphrase: str = "") -> dict:
+    """Replaces everything: needs the phrase and the admin's own password (like deleting every
+    farmer), so an unattended or stolen session can't wipe the platform."""
     if confirmation != IMPORT_CONFIRMATION:
         raise AppError(f"Type {IMPORT_CONFIRMATION} to confirm the import.")
-    parsed = _parse(backup)
+    if not verify_password(password, actor.password_hash):
+        raise AppError("That password is not correct.")
+    parsed = _parse(open_backup(document, passphrase))
     before = counts(db)
     passwords = dict(db.execute(select(User.id, User.password_hash)).all())
     for user in parsed.get("users", []):
         user["password_hash"] = passwords.get(user["id"])
     try:
         for model in reversed(TABLES):
-            db.execute(delete(model))
+            if model is not TransactionVerification:
+                db.execute(delete(model))
         for model in TABLES:
             rows = parsed.get(model.__tablename__)
             if rows:
-                db.execute(insert(model), rows)
+                if model is TransactionVerification:
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                    db.execute(pg_insert(model).values(rows).on_conflict_do_nothing(index_elements=["id"]))
+                else:
+                    db.execute(insert(model), rows)
         db.flush()
     except Exception as error:
         db.rollback()
@@ -245,17 +333,21 @@ def delete_all_farmers(db: DB, actor: Admin, confirmation: str, password: str) -
     return {"farmers": before["farmers"]}
 
 
-def reset_demo(db: DB, actor: Admin, confirmation: str) -> dict:
+def reset_demo(db: DB, actor: Admin, confirmation: str, password: str) -> dict:
     """Rebuilds the seeded demo world and the default settings and content. Real accounts, the
-    team and the audit trail are kept."""
+    team and the audit trail are kept. Never in production (it would add made-up farmers to the
+    live platform), and it needs the admin's own password."""
+    if get_settings().environment == "production":
+        raise Forbidden("The demo data can't be reset on the live platform.", code="production")
     if confirmation != RESET_CONFIRMATION:
         raise AppError(f"Type {RESET_CONFIRMATION} to confirm the reset.")
+    if not verify_password(password, actor.password_hash):
+        raise AppError("That password is not correct.")
     before = counts(db)
     seed.clear_seed_data(db)
     db.execute(delete(PlatformSetting))
     db.execute(delete(CreditConfigVersion))
     insert_default_credit_config(db)
-    reset_default_lenders(db)
     seed.seed_demo(db, force=True)
     append_audit(db, actor, action="system.reset_demo", target_type="system", summary="Reset the demo data",
                  before=before, after=counts(db))
@@ -281,16 +373,6 @@ def insert_default_credit_config(db: DB) -> None:
     )
 
 
-def reset_default_lenders(db: DB) -> None:
-    """The four original lenders back to their original terms (others are left as they are)."""
-    for lender in DEFAULT_LENDERS:
-        row = db.get(Lender, lender["id"]) or Lender(id=lender["id"], created_at=parse_iso(lender["createdAt"]))
-        row.name, row.rate, row.max_amount = lender["name"], lender["rate"], lender["maxAmount"]
-        row.min_months, row.max_months, row.min_score = lender["minMonths"], lender["maxMonths"], lender["minScore"]
-        row.color, row.active, row.description = lender["color"], True, None
-        db.merge(row)
-
-
 # Any fixed number: the advisory lock that lets one API worker at a time run the bootstrap.
 BOOTSTRAP_LOCK = 4_710_221
 
@@ -301,13 +383,12 @@ def _bootstrap_lock(db: DB) -> None:
 
 
 def bootstrap(db: DB, *, seed_demo_data: bool) -> None:
-    """At startup: the first credit rules, the default lenders and the super admin; then the
-    demo world when asked for and never seeded."""
+    """At startup: the first credit rules and the super admin; then the demo world when asked
+    for and never seeded. No lender is ever created here: administrators add the real ones
+    (Lenders page), and the marketplace stays empty until they publish one."""
     _bootstrap_lock(db)
     if not db.scalar(select(func.count()).select_from(CreditConfigVersion)):
         insert_default_credit_config(db)
-    if not db.scalar(select(func.count()).select_from(Lender)):
-        reset_default_lenders(db)
     seed.ensure_super_admin(db)
     db.commit()
     if seed_demo_data:

@@ -5,10 +5,14 @@ the frontend can show the message as it did when the services threw in the brows
 class AppError(Exception):
     status_code = 400
 
-    def __init__(self, message: str, *, code: str | None = None, status_code: int | None = None):
+    def __init__(
+        self, message: str, *, code: str | None = None, status_code: int | None = None, extra: dict | None = None
+    ):
         super().__init__(message)
         self.message = message
         self.code = code
+        # More JSON fields for the response (e.g. "until" on a lockout).
+        self.extra = extra or {}
         if status_code is not None:
             self.status_code = status_code
 

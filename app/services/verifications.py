@@ -1,8 +1,8 @@
 """Verifications (services/admin/verifications.service.ts).
 
-Phone and location checks pass instantly (with an approved record for the admin's history); a
-Ghana Card waits in the admin's queue until it is approved. Only a masked card number and a
-fingerprint are ever stored."""
+A phone passes once the farmer types back the code texted to it (an approved record is kept for
+the admin's history). A farm location and a Ghana Card wait in the admin's queue until approved.
+Only a masked card number and a server-side fingerprint are ever stored."""
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -30,7 +30,7 @@ from app.domain.verification import (
 from app.integrations import identity
 from app.models import Admin, Notification, User, VerificationRequest
 from app.schemas.farm import VerificationRequest as VerificationOut
-from app.services import farm, notifications
+from app.services import farm, notifications, phone_verification
 from app.services.farmer_data import display_name
 from app.services.mappers import verification_out
 
@@ -82,11 +82,12 @@ def _apply_approval(db: DB, request: VerificationRequest) -> None:
         if normalize_phone(profile.phone) != request.submitted_value:
             profile.phone = request.submitted_value
     elif request.kind == "location":
-        profile.verified_location = True
-        # An approved location also fills in the farm's coordinates if the profile has none.
+        # Only the pin that was reviewed is verified: a pin moved since then stays unverified.
         point = parse_location(request.submitted_value)
         if point and profile.gps_lat is None and inside_ghana(*point):
             profile.gps_lat, profile.gps_lng = point
+        if point and profile.gps_lat is not None and _same_point(point, (profile.gps_lat, profile.gps_lng)):
+            profile.verified_location = True
     else:
         profile.ghana_card_status = "verified"
         profile.ghana_card_masked = request.submitted_value
@@ -124,34 +125,72 @@ def queue_card(db: DB, user_id: str, masked: str, value_hash: str | None) -> Ver
     return request
 
 
-def card_from_number(card_number: str) -> tuple[str, str | None]:
-    """(mask, fingerprint) from a full number, or (mask, None) from the last four digits."""
+def _same_point(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    """Equal to the 4 decimals ("6.7000, -1.6000") a location request is sent with (~11 m)."""
+    return abs(a[0] - b[0]) < 0.00006 and abs(a[1] - b[1]) < 0.00006
+
+
+def card_from_number(card_number: str) -> tuple[str, str]:
+    """(mask, fingerprint) from a full number. Only the server makes fingerprints."""
     value = card_number.strip().upper()
-    if GHANA_CARD.match(value):
-        return mask_ghana_card("".join(ch for ch in value if ch.isdigit())[-4:]), hash_ghana_card(value)
-    if value.isdigit() and len(value) == 4:
-        return mask_ghana_card(value), None
-    raise AppError("Enter a Ghana Card number such as GHA-123456789-0.")
+    if not GHANA_CARD.match(value):
+        raise AppError("Enter a Ghana Card number such as GHA-123456789-0.")
+    return mask_ghana_card("".join(ch for ch in value if ch.isdigit())[-4:]), hash_ghana_card(value)
 
 
-def submit(db: DB, user_id: str, kind: str, value: str) -> VerificationOut:
-    """Called by the farmer app."""
+def queue_full_card(db: DB, user_id: str, card_number: str) -> VerificationRequest:
+    """Queues a full Ghana Card number: masked and fingerprinted here, and checked against the
+    NIA register when that is configured (advice for the reviewer). Not committed."""
+    masked, value_hash = card_from_number(card_number)
+    request = queue_card(db, user_id, masked, value_hash)
+    if get_settings().identity_checks_enabled:
+        name = farm.get_profile_row(db, user_id).name
+        request.identity_check = identity.check_ghana_card(card_number.strip().upper(), name, user_id)
+    return request
+
+
+def queue_location(db: DB, user_id: str, value: str) -> VerificationRequest:
+    """Queues the farm's map pin for an admin's review (one waiting at a time: a newer pin
+    replaces the waiting one). The pin must be the one saved on the profile. Not committed."""
+    point = parse_location(value)
+    if not point or not inside_ghana(*point):
+        raise AppError("Set your farm's location on the map (inside Ghana) first.")
+    profile = farm.get_profile_row(db, user_id)
+    if profile.gps_lat is None or not _same_point(point, (profile.gps_lat, profile.gps_lng)):
+        raise AppError("Save your farm's location on your profile first.")
+    submitted = f"{point[0]:.4f}, {point[1]:.4f}"
+    waiting = db.scalars(
+        select(VerificationRequest).where(
+            VerificationRequest.user_id == user_id,
+            VerificationRequest.kind == "location",
+            VerificationRequest.status == "pending",
+        )
+    ).first()
+    if waiting:
+        waiting.submitted_value = submitted
+        waiting.submitted_at = now_utc()
+        return waiting
+    request = VerificationRequest(user_id=user_id, kind="location", submitted_value=submitted, status="pending")
+    db.add(request)
+    return request
+
+
+def submit(db: DB, user_id: str, kind: str, value: str, code: str | None = None) -> VerificationOut:
+    """Called by the farmer app. A phone needs the code texted to it (POST /me/phone/code)."""
     if kind == "ghanaCard":
-        masked, value_hash = card_from_number(value)
-        request = queue_card(db, user_id, masked, value_hash)
-        # With the full number in hand, ask the NIA register (advice for the reviewer).
-        if value_hash and get_settings().identity_checks_enabled:
-            name = farm.get_profile_row(db, user_id).name
-            request.identity_check = identity.check_ghana_card(value, name, user_id)
+        request = queue_full_card(db, user_id, value)
+    elif kind == "location":
+        request = queue_location(db, user_id, value)
     else:
-        if kind == "phone":
-            if not GHANA_PHONE.match(value.strip()):
-                raise AppError("Enter a valid Ghana phone number.")
-            submitted = normalize_phone(value)
-        else:
-            if not value.strip():
-                raise AppError("Location is required.")
-            submitted = value.strip()
+        if not GHANA_PHONE.match(value.strip()):
+            raise AppError("Enter a valid Ghana phone number.")
+        submitted = normalize_phone(value)
+        profile = farm.get_profile_row(db, user_id)
+        if normalize_phone((profile.phone or "").strip()) != submitted:
+            raise AppError("Verify the phone number saved on your profile.")
+        if not code or not code.strip():
+            raise AppError("Enter the code we texted to your phone.", code="invalid_code")
+        phone_verification.confirm_code(db, user_id, submitted, code)
         now = now_utc()
         request = VerificationRequest(
             user_id=user_id,

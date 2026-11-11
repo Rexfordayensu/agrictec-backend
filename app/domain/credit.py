@@ -1,9 +1,15 @@
 """THE credit score (lib/calculations/credit-score.ts), used everywhere: farmer app, loans, admin.
 
 Five factors from 0 to 100 are weighted by the admin's credit rules, then mapped onto 300-850.
-The default rules reproduce the original fixed weights exactly (30/25/25/10/10)."""
+The default rules reproduce the original fixed weights exactly (30/25/25/10/10).
 
-from datetime import date
+Records and MoMo entries are typed in by the farmer, so only entries recorded on time build the
+history, completeness and MoMo factors: an entry counts when it was entered within
+RECORD_GRACE_DAYS of the date it describes. Months of "history" can't be made in one sitting by
+back-dating, and a pile of entries typed in at once only counts for the recent ones. Older
+entries are still kept and still count for income and the loan's record minimum."""
+
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from app.domain.clock import add_months, month_start, today
@@ -22,6 +28,15 @@ FACTOR_KEYS = [
     "momo_activity",
     "verification",
 ]
+
+# How long after the day it describes an entry may be typed in and still build the score.
+RECORD_GRACE_DAYS = 45
+
+
+def recorded_on_time(item: FarmRecord | MomoTransaction) -> bool:
+    """Entered within RECORD_GRACE_DAYS of its own date (never counted when back-dated further)."""
+    entered = item.created_at.date() if isinstance(item.created_at, datetime) else item.created_at
+    return entered - item.date <= timedelta(days=RECORD_GRACE_DAYS)
 
 
 def default_config() -> CreditConfig:
@@ -59,15 +74,16 @@ def _income_stability(records: list[FarmRecord]) -> float:
     expenses = total_expenses(records)
     if income >= expenses:
         return min(100, 50 + profit_margin(records))
-    return max(0, 50 - (expenses / income - 1) * 100)
+    return max(0, 50 - float(expenses / income - 1) * 100)
 
 
 def verification_checks(profile: Profile | None) -> list[bool]:
-    """Profile complete, phone, location (a map pin counts) and a Ghana Card verified by an admin."""
+    """Profile complete, phone (by SMS code), a farm location and a Ghana Card, both verified by
+    an admin. A map pin alone doesn't count: anyone can drop one."""
     return [
         is_profile_complete(profile),
         bool(profile and profile.verification.phone),
-        bool(profile and (profile.gps or profile.verification.location)),
+        bool(profile and profile.verification.location),
         bool(profile and profile.ghana_card.status == "verified"),
     ]
 
@@ -84,11 +100,13 @@ def calculate_credit_score(
     targets = config.targets
     window = max(1, targets.months_window)
     checks = verification_checks(profile)
+    timely_records = [r for r in records if recorded_on_time(r)]
+    timely_momo = [t for t in momo if recorded_on_time(t)]
     factors = {
-        "payment_history": _active_months(records, momo, window, now) / window * 100,
-        "record_completeness": min(100, (len(records) + len(momo)) / targets.records_for_full * 100),
+        "payment_history": _active_months(timely_records, timely_momo, window, now) / window * 100,
+        "record_completeness": min(100, (len(timely_records) + len(timely_momo)) / targets.records_for_full * 100),
         "income_stability": _income_stability(records),
-        "momo_activity": min(100, len(momo) / targets.momo_for_full * 100),
+        "momo_activity": min(100, len(timely_momo) / targets.momo_for_full * 100),
         "verification": sum(checks) / len(checks) * 100,
     }
     return score_from_factors(factors, config.weights)

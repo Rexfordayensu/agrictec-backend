@@ -24,6 +24,18 @@ def password_problem(password: str) -> str | None:
     return None
 
 
+def farmer_password_problem(password: str) -> str | None:
+    """Why a farmer's new password is too weak, or None: 8+ characters with a letter and a number
+    (lib/admin/passwords.ts, farmerPasswordProblem). Not for signing in with an older one."""
+    if len(password) < FARMER_PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {FARMER_PASSWORD_MIN_LENGTH} characters"
+    if len(password) > 200:
+        return "Password must be at most 200 characters"
+    if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+        return "Password needs at least one letter and one number"
+    return None
+
+
 def make_temp_password() -> str:
     """A one-time password such as "Temp-48213-kq7v", shown once to the admin who created it.
 

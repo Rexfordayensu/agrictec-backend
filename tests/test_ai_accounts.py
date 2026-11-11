@@ -58,23 +58,22 @@ def test_claude_answers_with_the_farmers_own_figures(ai_on):
     calls, answers = ai_on
     c = farmer_on_premium()
     c.post(f"{API}/me/records", json={"type": "income", "description": "Maize sale", "crop": "Maize", "amount": 1200, "date": "2026-10-01"})
-    saved = c.put(f"{API}/me/chat", json=[
-        {"id": "w", "role": "ai", "content": {"title": "Welcome", "intro": "Ask me anything."}, "createdAt": "2026-10-01T08:00:00.000Z"},
-        {"id": "u1", "role": "user", "content": "When should I plant maize?", "createdAt": "2026-10-01T08:01:00.000Z"},
-        {"id": "a1", "role": "ai", "content": {"title": "Planting maize", "intro": "At the start of the rains."}, "createdAt": "2026-10-01T08:01:05.000Z"},
-    ])
-    assert saved.status_code == 204, saved.text
+    # An earlier exchange, saved by the API itself (the browser can't write the conversation).
+    answers.append({"title": "Planting maize", "intro": "At the start of the rains.", "bullets": [], "tip": ""})
+    first = c.post(f"{API}/me/assistant", json={"message": "When should I plant maize?"})
+    assert first.status_code == 200, first.text
+    assert [m["role"] for m in first.json()["messages"]] == ["user", "ai"]
     answers.append({"title": "Raising your score", "intro": "Keep recording sales.", "bullets": ["Record every sale", " "], "tip": ""})
     r = c.post(f"{API}/me/assistant", json={"message": "How do I improve my credit score?"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["source"] == "ai" and body["creditsRemaining"] == 99
+    assert body["source"] == "ai" and body["creditsRemaining"] == 98
     reply = {k: v for k, v in body["reply"].items() if v is not None}
     assert reply == {"title": "Raising your score", "intro": "Keep recording sales.", "bullets": ["Record every sale"]}
-    sent = calls[0]
+    sent = calls[1]
     assert "Credit score:" in sent["system"] and "GHS 1,200.00" in sent["system"]
     assert "prepared answer" in sent["system"]  # the knowledge base's reply guides Claude
-    # The history starts with the farmer (the welcome is dropped) and ends with the new question.
+    # The history: the earlier exchange, then the new question.
     assert [m["role"] for m in sent["messages"]] == ["user", "assistant", "user"]
     assert sent["messages"][1]["content"] == "Planting maize\nAt the start of the rains."
     assert sent["messages"][-1]["content"] == "How do I improve my credit score?"
@@ -139,10 +138,11 @@ def test_claude_reads_the_photo(ai_on, db):
     assert r.json()["creditsRemaining"] == 95
     image = calls[0]["messages"][0]["content"][0]
     assert image["type"] == "image" and image["source"]["media_type"] == "image/jpeg"
-    # Saved with where it came from, so the history shows the right note.
-    saved = c.post(f"{API}/me/diagnoses", json={**result, "date": "2026-10-29T10:00:00.000Z"})
-    assert saved.status_code == 201, saved.text
-    assert c.get(f"{API}/me/diagnoses").json()[0]["source"] == "ai"
+    # Saved by the API with where it came from and a thumbnail it made itself.
+    saved = r.json()["diagnosis"]
+    assert saved["source"] == "ai" and saved["imageThumb"].startswith("data:image/jpeg;base64,")
+    history = c.get(f"{API}/me/diagnoses").json()
+    assert [d["id"] for d in history] == [saved["id"]] and history[0]["disease"] == "Maize Streak Virus"
 
 
 def test_photos_are_scaled_before_sending():

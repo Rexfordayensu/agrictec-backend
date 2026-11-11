@@ -215,6 +215,20 @@ def prepare_photo(content: bytes, content_type: str | None) -> Photo:
     return Photo("image/jpeg", base64.standard_b64encode(out.getvalue()).decode("ascii"))
 
 
+THUMB_EDGE = 200
+
+
+def thumbnail(photo: Photo) -> str:
+    """A small JPEG data URL of the photo, kept with the saved diagnosis (made here, never taken
+    from the browser, so it is always an inline image)."""
+    image = Image.open(io.BytesIO(base64.standard_b64decode(photo.data)))
+    image = image.convert("RGB")
+    image.thumbnail((THUMB_EDGE, THUMB_EDGE))
+    out = io.BytesIO()
+    image.save(out, format="JPEG", quality=70)
+    return "data:image/jpeg;base64," + base64.standard_b64encode(out.getvalue()).decode("ascii")
+
+
 def diagnose_photo(photo: Photo, crop: str | None) -> dict:
     """{crop, disease, severity, confidence (0-100), treatment, prevention}."""
     hint = f"The farmer says this is {crop}." if crop else "The farmer didn't say which crop this is."

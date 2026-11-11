@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DB
 
 from app.core.audit import append_audit
-from app.core.errors import NotFound
+from app.core.errors import Forbidden, NotFound
 from app.domain import analytics
 from app.domain.clock import iso, now_utc
 from app.domain.permissions import can
@@ -23,7 +23,7 @@ from app.domain.reports import (
 )
 from app.models import Admin, AuditEntry, LoanApplication, RiskFlag, VerificationRequest
 from app.schemas.admin import BuilderSpec
-from app.services import platform_store
+from app.services import lending, platform_store, transactions
 from app.services.farmer_data import accounts, load_farmers
 from app.services.mappers import audit_out, loan_out, risk_out, verification_out
 
@@ -53,6 +53,7 @@ def overview(db: DB, admin: Admin, date_range: str) -> dict:
         "loanFunnel": analytics.loan_funnel(apps),
         "farmersByRegion": analytics.farmers_by_region(farmers),
         "cropPopularity": analytics.crop_popularity(farmers),
+        "cropGrowers": sum(1 for f in analytics.registered(farmers) if f.profile.primary_crops),
         "scoreDistribution": analytics.score_distribution(farmers, config.bands),
         "needsAttention": analytics.needs_attention(
             farmers=farmers, apps=apps, flags=flags, verifications=verifications,
@@ -60,6 +61,7 @@ def overview(db: DB, admin: Admin, date_range: str) -> dict:
         ),
         "recentActivity": [e.model_dump(mode="json", by_alias=True) for e in recent],
         "badges": {
+            "pendingTransactions": transactions.queue_count(db) if can(admin.role, "transactions.review") else 0,
             "pendingVerifications": sum(1 for v in verifications if v.status == "pending"),
             "openRiskFlags": sum(1 for f in flags if f.status == "open"),
             "newApplications": sum(1 for a in apps if a.status == "submitted"),
@@ -75,7 +77,7 @@ def report_data(db: DB) -> ReportData:
         records=[r for d in data.values() for r in d.records],
         momo=[t for d in data.values() for t in d.momo],
         applications=apps,
-        lenders=platform_store.lenders(db, include_inactive=True),
+        lenders=lending.list_admin_lenders(db),
         verifications=verifications,
         risk_flags=flags,
         bands=config.bands,
@@ -110,10 +112,14 @@ def export_report(db: DB, actor: Admin, report_id: str, fmt: str) -> dict:
 
 def preview(db: DB, spec: BuilderSpec) -> dict:
     """The builder's preview (no export, so not logged)."""
+    if spec.dataset in ("records", "momo"):
+        raise Forbidden("Financial entries can only be viewed in the transaction review queue.")
     return run_builder(spec, report_data(db))
 
 
 def export_custom(db: DB, actor: Admin, spec: BuilderSpec) -> dict:
+    if spec.dataset in ("records", "momo"):
+        raise Forbidden("Financial entries can only be viewed in the transaction review queue.")
     result = run_builder(spec, report_data(db))
     label = DATASETS[spec.dataset]["label"]
     append_audit(

@@ -2,6 +2,7 @@
 
 import math
 from datetime import date
+from decimal import Decimal
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MONTHS_LONG = [
@@ -20,21 +21,26 @@ MONTHS_LONG = [
 ]
 
 
+def _half(value: float | Decimal) -> float | Decimal:
+    """0.5 of the same kind: money amounts are Decimal, other numbers float."""
+    return Decimal("0.5") if isinstance(value, Decimal) else 0.5
+
+
 def js_round(value: float, digits: int = 0) -> float:
     """JavaScript's Math.round (halves go up), not Python's banker's rounding."""
     factor = 10**digits
-    return math.floor(value * factor + 0.5) / factor
+    return math.floor(value * factor + _half(value)) / factor
 
 
 def round_int(value: float) -> int:
-    return int(math.floor(value + 0.5))
+    return int(math.floor(value + _half(value)))
 
 
 def format_ghs(amount: float) -> str:
     """format_ghs(1234.5) -> "GHS 1,235", format_ghs(-500) -> "-GHS 500"."""
     sign = "-" if amount < 0 else ""
     # Intl rounds halves away from zero.
-    return f"{sign}GHS {int(math.floor(abs(amount) + 0.5)):,}"
+    return f"{sign}GHS {int(math.floor(abs(amount) + _half(amount))):,}"
 
 
 def format_date(value: date) -> str:

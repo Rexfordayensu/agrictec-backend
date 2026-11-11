@@ -1,13 +1,15 @@
 """Lenders and loan applications (services/admin/lenders.service.ts,
 services/admin/loan-applications.service.ts, services/loans.service.ts)."""
 
+import hashlib
+import io
 import re
 import secrets
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
+from PIL import Image
 
 from app.core.audit import append_audit
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
@@ -15,24 +17,24 @@ from app.core.events import bus
 from app.domain.clock import now_utc
 from app.domain.credit import calculate_credit_score
 from app.domain.csv import to_csv
+from app.domain.lenders import IDENTITY_FIELDS, listing_blockers, publish_blockers
 from app.domain.loans import (
     LOAN_STATUS_LABELS,
     check_eligibility,
-    deactivate_block,
     delete_block,
     eligibility_checks,
     ghana_card_loan_message,
-    monthly_repayment,
     status_change_error,
 )
-from app.models import Admin, Lender, LoanApplication, LoanStatusEvent, Profile, User
+from app.models import Admin, Lender, LoanApplication, LoanProduct, LoanStatusEvent, Profile, RiskFlag, User
 from app.schemas import farm as f
 from app.schemas.admin import LoanReview, StatusChange
+from app.integrations import storage
+from app.schemas.platform import AdminLender, LenderInput, LenderListing, LenderPatch, LenderSuspension, LenderVerification
 from app.schemas.platform import Lender as LenderOut
-from app.schemas.platform import LenderInput, LenderPatch
 from app.services import notifications, platform_store
 from app.services.farmer_data import load_farmer, load_farmers
-from app.services.mappers import lender_out, loan_out
+from app.services.mappers import admin_lender_out, lender_out, loan_out
 
 # What the farmer is told at each step of the pipeline.
 LOAN_NOTICES = {
@@ -46,6 +48,15 @@ LOAN_NOTICES = {
 }
 
 # ---------- Lenders ----------
+#
+# Administrators add real institutions from their official information, check the licence
+# against the regulator's own source, record that the public listing was authorised, then
+# publish. Farmers only ever see lenders that pass app/domain/lenders.py at the moment of
+# reading. Every change is in the audit log and reaches open farmer tabs at once.
+
+LOGO_MAX_BYTES = 2 * 1024 * 1024
+LOGO_MAX_SIDE = 512
+LOGO_FORMATS = {"PNG", "JPEG", "WEBP"}
 
 
 def _lender(db: DB, lender_id: str) -> Lender:
@@ -60,84 +71,304 @@ def _same_name(a: str, b: str) -> bool:
 
 
 def _make_id(db: DB, name: str) -> str:
-    """"Sinapi Aba Trust" -> "sinapi-aba-trust", with a number added if taken."""
-    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "lender"
+    """"GCB Bank PLC" -> "gcb-bank-plc", with a number added if taken."""
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:70] or "lender"
     candidate, n = base, 2
     while db.get(Lender, candidate):
         candidate, n = f"{base}-{n}", n + 1
     return candidate
 
 
-def _all_applications(db: DB) -> list[f.LoanApplication]:
-    return [loan_out(r) for r in db.scalars(select(LoanApplication))]
+def _application_counts(db: DB) -> dict[str, int]:
+    rows = db.execute(select(LoanApplication.partner_id, func.count()).group_by(LoanApplication.partner_id))
+    return {partner_id: count for partner_id, count in rows}
 
 
-def create_lender(db: DB, actor: Admin, data: LenderInput) -> LenderOut:
-    if any(_same_name(row.name, data.name) for row in db.scalars(select(Lender))):
+def _admin_view(db: DB, row: Lender, counts: dict[str, int] | None = None) -> AdminLender:
+    counts = counts if counts is not None else _application_counts(db)
+    return admin_lender_out(row, now=now_utc(), applications=counts.get(row.id, 0))
+
+
+def _check_name(db: DB, name: str, own_id: str | None = None) -> None:
+    if any(r.id != own_id and _same_name(r.name, name) for r in db.scalars(select(Lender))):
         raise Conflict("A lender with this name already exists.")
-    row = Lender(id=_make_id(db, data.name), created_at=now_utc(), **data.model_dump())
+
+
+def _saved(db: DB, actor: Admin, row: Lender, *, action: str, summary: str, before, after) -> AdminLender:
+    append_audit(db, actor, action=action, target_type="lender", target_id=row.id, summary=summary,
+                 before=before, after=after)
+    db.commit()
+    bus.publish("platform")
+    return _admin_view(db, row)
+
+
+def _snapshot(row: Lender) -> dict:
+    """The lender as the audit log records it."""
+    return admin_lender_out(row, now=now_utc()).model_dump(mode="json", by_alias=True)
+
+
+def list_admin_lenders(db: DB) -> list[AdminLender]:
+    counts = _application_counts(db)
+    rows = db.scalars(select(Lender).order_by(Lender.name))
+    return [_admin_view(db, row, counts) for row in rows]
+
+
+def get_admin_lender(db: DB, lender_id: str) -> AdminLender:
+    return _admin_view(db, _lender(db, lender_id))
+
+
+def create_lender(db: DB, actor: Admin, data: LenderInput) -> AdminLender:
+    """A new lender starts as an unverified draft: farmers don't see it yet."""
+    _check_name(db, data.name)
+    now = now_utc()
+    row = Lender(
+        id=_make_id(db, data.name),
+        **data.model_dump(),
+        licence_status="unverified",
+        publication_status="draft",
+        listing_authorised=False,
+        created_by=actor.name,
+        created_at=now,
+        updated_at=now,
+        updated_by=actor.name,
+    )
     db.add(row)
     db.flush()
-    lender = lender_out(row)
-    append_audit(db, actor, action="lender.create", target_type="lender", target_id=row.id,
-                 summary=f"Added lender {row.name}", after=lender)
-    db.commit()
-    bus.publish("platform")
-    return lender
+    return _saved(db, actor, row, action="lender.create", summary=f"Added lender {row.name} (draft)",
+                  before=None, after=_snapshot(row))
 
 
-def update_lender(db: DB, actor: Admin, lender_id: str, patch: LenderPatch) -> LenderOut:
+def update_lender(db: DB, actor: Admin, lender_id: str, patch: LenderPatch) -> AdminLender:
+    """Changing who the institution is (name, registered name, licence, regulator or type)
+    clears its verification: it leaves the marketplace until it is checked again."""
     row = _lender(db, lender_id)
-    before = lender_out(row)
-    merged = {**before.model_dump(include=set(LenderInput.model_fields)), **patch.model_dump(exclude_unset=True)}
-    data = LenderInput.model_validate(merged)
-    if any(r.id != lender_id and _same_name(r.name, data.name) for r in db.scalars(select(Lender))):
-        raise Conflict("A lender with this name already exists.")
-    # Switching a lender off through an edit follows the same rule as the toggle.
-    if before.active and not data.active:
-        blocked = deactivate_block(before, _all_applications(db))
-        if blocked:
-            raise AppError(blocked)
-    for key, value in data.model_dump().items():
-        setattr(row, key, value)
-    after = lender_out(row)
-    append_audit(db, actor, action="lender.update", target_type="lender", target_id=lender_id,
-                 summary=f"Edited lender {row.name}", before=before, after=after)
-    db.commit()
-    bus.publish("platform")
-    return after
+    before = _snapshot(row)
+    current = LenderInput.model_validate(
+        {key: getattr(row, key) for key in LenderInput.model_fields}
+    ).model_dump()
+    merged = LenderInput.model_validate({**current, **patch.model_dump(exclude_unset=True)}).model_dump()
+    _check_name(db, merged["name"], own_id=lender_id)
+    changed = {key for key, value in merged.items() if current[key] != value}
+    if not changed:
+        return _admin_view(db, row)
+    for key in changed:
+        setattr(row, key, merged[key])
+    identity_changed = changed & IDENTITY_FIELDS
+    if identity_changed and row.licence_status != "unverified":
+        row.licence_status = "unverified"
+        row.verification_note = "Identity details changed: check the licence again."
+        if row.publication_status == "published":
+            row.publication_status = "unpublished"
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    summary = f"Edited lender {row.name}"
+    if identity_changed:
+        summary += " (identity details changed: verification cleared)"
+    return _saved(db, actor, row, action="lender.update", summary=summary, before=before, after=_snapshot(row))
 
 
-def toggle_lender(db: DB, actor: Admin, lender_id: str) -> LenderOut:
+def verify_lender(db: DB, actor: Admin, lender_id: str, check: LenderVerification) -> AdminLender:
+    """Records the result of checking the licence against an official source. Anything but
+    "verified" takes the lender off the marketplace."""
     row = _lender(db, lender_id)
-    current = lender_out(row)
-    # Hidden from farmers at once, so not while applications are under review.
-    blocked = deactivate_block(current, _all_applications(db))
-    if blocked:
-        raise AppError(blocked)
-    row.active = not row.active
-    append_audit(
-        db, actor, action="lender.activate" if row.active else "lender.deactivate", target_type="lender",
-        target_id=lender_id, summary=f"{'Activated' if row.active else 'Deactivated'} lender {row.name}",
-        before={"active": current.active}, after={"active": row.active},
+    if check.checked_on > now_utc().date():
+        raise AppError("The check date can't be in the future.")
+    before = _snapshot(row)
+    row.licence_status = check.licence_status
+    row.verification_source = (check.source or "").strip() or None
+    row.verification_note = (check.note or "").strip() or None
+    checked = datetime.combine(check.checked_on, datetime.min.time(), tzinfo=UTC)
+    row.verified_at = checked if check.licence_status != "unverified" else None
+    row.verified_by = actor.name
+    if check.licence_status != "verified" and row.publication_status == "published":
+        row.publication_status = "unpublished"
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    return _saved(db, actor, row, action="lender.verify",
+                  summary=f"Recorded licence check for {row.name}: {check.licence_status}",
+                  before=before, after=_snapshot(row))
+
+
+def set_listing(db: DB, actor: Admin, lender_id: str, listing: LenderListing) -> AdminLender:
+    row = _lender(db, lender_id)
+    before = _snapshot(row)
+    row.listing_authorised = listing.authorised
+    row.listing_note = (listing.note or "").strip() or None
+    if not listing.authorised and row.publication_status == "published":
+        row.publication_status = "unpublished"
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    verb = "Authorised" if listing.authorised else "Withdrew authorisation for"
+    return _saved(db, actor, row, action="lender.listing", summary=f"{verb} the public listing of {row.name}",
+                  before=before, after=_snapshot(row))
+
+
+def publish_lender(db: DB, actor: Admin, lender_id: str) -> AdminLender:
+    row = _lender(db, lender_id)
+    if row.publication_status == "suspended":
+        raise AppError("This lender is suspended. Reinstate it first.")
+    blockers = publish_blockers(
+        licence_status=row.licence_status, last_checked=row.verified_at,
+        verification_source=row.verification_source, listing_authorised=row.listing_authorised,
+        now=now_utc(),
     )
-    db.commit()
-    bus.publish("platform")
-    return lender_out(row)
+    if blockers:
+        raise AppError(" ".join(blockers), code="not_publishable")
+    before = _snapshot(row)
+    now = now_utc()
+    row.publication_status, row.published_at = "published", now
+    row.updated_at, row.updated_by = now, actor.name
+    return _saved(db, actor, row, action="lender.publish", summary=f"Published {row.name} to farmers",
+                  before=before, after=_snapshot(row))
+
+
+def unpublish_lender(db: DB, actor: Admin, lender_id: str) -> AdminLender:
+    row = _lender(db, lender_id)
+    if row.publication_status != "published":
+        raise AppError("This lender is not published.")
+    before = _snapshot(row)
+    row.publication_status = "unpublished"
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    return _saved(db, actor, row, action="lender.unpublish", summary=f"Unpublished {row.name}",
+                  before=before, after=_snapshot(row))
+
+
+def suspend_lender(db: DB, actor: Admin, lender_id: str, suspension: LenderSuspension) -> AdminLender:
+    """Hidden from every farmer at once, whatever else is going on."""
+    row = _lender(db, lender_id)
+    before = _snapshot(row)
+    row.publication_status = "suspended"
+    row.suspension_reason = suspension.reason
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    return _saved(db, actor, row, action="lender.suspend", summary=f"Suspended {row.name}: {suspension.reason}",
+                  before=before, after=_snapshot(row))
+
+
+def reinstate_lender(db: DB, actor: Admin, lender_id: str) -> AdminLender:
+    """Back to unpublished: publishing again re-checks everything."""
+    row = _lender(db, lender_id)
+    if row.publication_status != "suspended":
+        raise AppError("This lender is not suspended.")
+    before = _snapshot(row)
+    row.publication_status, row.suspension_reason = "unpublished", None
+    row.updated_at, row.updated_by = now_utc(), actor.name
+    return _saved(db, actor, row, action="lender.reinstate", summary=f"Lifted the suspension of {row.name}",
+                  before=before, after=_snapshot(row))
 
 
 def delete_lender(db: DB, actor: Admin, lender_id: str) -> None:
-    """Only a lender with no applications at all can be deleted: deactivate it instead."""
+    """Only a lender with no applications and no published product (whose versions are its
+    history): unpublish or suspend it instead. Unpublished draft products go with it."""
     row = _lender(db, lender_id)
-    current = lender_out(row)
-    blocked = delete_block(current, _all_applications(db))
+    blocked = delete_block(row.name, _application_counts(db).get(lender_id, 0))
     if blocked:
         raise AppError(blocked)
+    published = db.scalar(
+        select(func.count()).where(
+            LoanProduct.lender_id == lender_id, LoanProduct.published_version.is_not(None)
+        )
+    )
+    if published:
+        raise AppError(
+            f"{row.name} has published loan products, and deleting it would erase their version "
+            "history. Unpublish or suspend it instead."
+        )
+    before = _snapshot(row)
+    logo = row.logo_key
+    if logo:
+        storage.store(db).delete(logo)
     db.delete(row)
     append_audit(db, actor, action="lender.delete", target_type="lender", target_id=lender_id,
-                 summary=f"Removed lender {row.name}", before=current, after={"deleted": True})
+                 summary=f"Removed lender {before['name']}", before=before, after={"deleted": True})
     db.commit()
     bus.publish("platform")
+
+
+def _clean_logo(data: bytes) -> bytes:
+    """The genuine logo, re-encoded: PNG, JPEG or WebP only (no SVG, which can carry scripts),
+    metadata dropped, at most 512 px on its longest side."""
+    if len(data) > LOGO_MAX_BYTES:
+        raise AppError("The logo must be 2 MB or smaller.")
+    try:
+        with Image.open(io.BytesIO(data)) as probe:
+            probe.verify()
+        image = Image.open(io.BytesIO(data))
+        if image.format not in LOGO_FORMATS:
+            raise AppError("Upload the logo as a PNG, JPEG or WebP image.")
+        image.load()
+    except AppError:
+        raise
+    except Exception:  # noqa: BLE001 - anything Pillow can't read is not an image
+        raise AppError("That file is not a readable image.") from None
+    image.thumbnail((LOGO_MAX_SIDE, LOGO_MAX_SIDE))
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA")
+    out = io.BytesIO()
+    image.save(out, format="WEBP", quality=90, method=4)
+    return out.getvalue()
+
+
+def set_logo(db: DB, actor: Admin, lender_id: str, data: bytes) -> AdminLender:
+    row = _lender(db, lender_id)
+    cleaned = _clean_logo(data)
+    digest = hashlib.sha256(cleaned).hexdigest()[:16]
+    key = f"lenders/{row.id}/logo-{digest}.webp"
+    files = storage.store(db)
+    files.put(key, cleaned, "image/webp")
+    old = row.logo_key
+    row.logo_key, row.logo_updated_at = key, now_utc()
+    row.updated_at, row.updated_by = row.logo_updated_at, actor.name
+    if old and old != key:
+        files.delete(old)
+    return _saved(db, actor, row, action="lender.logo", summary=f"Uploaded the logo of {row.name}",
+                  before={"logo": old}, after={"logo": key})
+
+
+def remove_logo(db: DB, actor: Admin, lender_id: str) -> AdminLender:
+    row = _lender(db, lender_id)
+    old = row.logo_key
+    if not old:
+        return _admin_view(db, row)
+    row.logo_key, row.logo_updated_at = None, now_utc()
+    row.updated_at, row.updated_by = row.logo_updated_at, actor.name
+    storage.store(db).delete(old)
+    return _saved(db, actor, row, action="lender.logo", summary=f"Removed the logo of {row.name}",
+                  before={"logo": old}, after={"logo": None})
+
+
+def logo(db: DB, lender_id: str, *, listed_only: bool) -> tuple[bytes, str]:
+    """The stored logo. Farmers only get the logos of listed lenders."""
+    row = db.get(Lender, lender_id)
+    if row is None or not row.logo_key or (listed_only and not is_listed(row)):
+        raise NotFound("No logo.")
+    found = storage.store(db).get(row.logo_key)
+    if found is None:
+        raise NotFound("No logo.")
+    return found
+
+
+# ---------- Lenders: what farmers see ----------
+
+
+def is_listed(row: Lender) -> bool:
+    return not listing_blockers(
+        publication_status=row.publication_status, licence_status=row.licence_status,
+        last_checked=row.verified_at, verification_source=row.verification_source,
+        listing_authorised=row.listing_authorised, now=now_utc(),
+    )
+
+
+def listed_lenders(db: DB) -> list[LenderOut]:
+    """The marketplace: the same catalogue for every farmer, checked at the moment of reading
+    (a licence check that lapses overnight hides the lender without anyone acting)."""
+    rows = db.scalars(
+        select(Lender).where(Lender.publication_status == "published").order_by(Lender.name)
+    )
+    return [lender_out(row) for row in rows if is_listed(row)]
+
+
+def listed_lender(db: DB, lender_id: str) -> LenderOut:
+    row = db.get(Lender, lender_id)
+    if row is None or not is_listed(row):
+        raise NotFound("This lender is not available.")
+    return lender_out(row)
 
 
 # ---------- Applications: farmer side ----------
@@ -163,68 +394,60 @@ def eligibility(db: DB, user_id: str, query: f.EligibilityQuery) -> f.Eligibilit
     data = load_farmer(db, user_id)
     config = platform_store.credit_config(db)
     score = calculate_credit_score(data.records, data.momo, data.profile, config).score
-    partner = None
     if query.partner_id:
-        partner = next((l for l in platform_store.lenders(db) if l.id == query.partner_id), None)
-        if partner is None:
-            raise NotFound("This lender is not accepting applications right now.")
+        listed_lender(db, query.partner_id)  # 404 unless farmers can see it
     return check_eligibility(
         amount=query.amount,
         records=data.records,
         score=score,
         rules=config.eligibility,
-        partner=partner,
         ghana_card=data.profile.ghana_card.status,
     )
 
 
+ACCOUNT_REVIEW_MESSAGE = (
+    "Your account is being reviewed by AgriCtec. You can apply for a loan once the review is complete."
+)
+
+
+def account_under_review(db: DB, user_id: str) -> bool:
+    """Whether an admin confirmed a risk flag on this account (no details leave the console)."""
+    return bool(
+        db.scalar(select(func.count()).where(RiskFlag.user_id == user_id, RiskFlag.status == "confirmed"))
+    )
+
+
 def submit(db: DB, user_id: str, data: f.LoanApplicationInput) -> f.LoanApplication:
-    """Starts as "submitted" and the admin moves it on. Every rule the loans page shows is
-    checked again here: the rate, the monthly payment and the score come from the server."""
+    """Checks everything the farmer can fix first, then the lender. Applications need a loan
+    product the lender published on AgriCtec, with its real terms: until a lender has one, nothing
+    is sent (and no rate or payment is ever made up)."""
     if not platform_store.flags(db).loans:
         raise Forbidden("Loans are currently unavailable.", code="feature_off")
     farmer = load_farmer(db, user_id)
     if farmer.profile.ghana_card.status != "verified":
         raise Forbidden(ghana_card_loan_message(farmer.profile.ghana_card.status), code="ghana_card_required")
-    lender = next((l for l in platform_store.lenders(db) if l.id == data.partner_id), None)
-    if lender is None:
-        raise AppError("This lender is not accepting applications right now.")
-    if not lender.min_months <= data.months <= lender.max_months:
-        raise AppError(f"{lender.name} lends for {lender.min_months}–{lender.max_months} months.")
-    config = platform_store.credit_config(db)
-    score = calculate_credit_score(farmer.records, farmer.momo, farmer.profile, config).score
-    result = check_eligibility(
-        amount=data.amount, records=farmer.records, score=score, rules=config.eligibility, partner=lender,
-        ghana_card=farmer.profile.ghana_card.status,
-    )
-    if not result.eligible:
-        raise AppError(" ".join(result.reasons), code="not_eligible")
+    # The loan report gives no recommendation while the account is under review; nor can the
+    # farmer send one to a lender.
+    if account_under_review(db, user_id):
+        raise Forbidden(ACCOUNT_REVIEW_MESSAGE, code="account_under_review")
+    lender = db.get(Lender, data.partner_id)
+    if lender is None or not is_listed(lender):
+        raise AppError("This lender is not available on AgriCtec right now.", code="lender_unavailable")
+    from app.services.loan_products import has_listed_products  # (imports this module)
 
-    now = now_utc()
-    row = LoanApplication(
-        reference=_reference(db),
-        user_id=user_id,
-        partner_id=lender.id,
-        amount=data.amount,
-        months=data.months,
-        purpose=data.purpose,
-        rate=lender.rate,
-        monthly=monthly_repayment(data.amount, lender.rate, data.months).monthly,
-        score_at_application=score,
-        status="submitted",
-        created_at=now,
+    if not has_listed_products(db, lender.id):
+        raise AppError(
+            f"{lender.name} has not published a loan product on AgriCtec yet, so applications can't be "
+            "sent to it here. Contact the lender through its official channels.",
+            code="no_loan_products",
+        )
+    # Applications against a product (with its requirements, documents and consent) open in a
+    # later step; until then nothing is sent and no rate or payment is made up.
+    raise AppError(
+        f"Applying to {lender.name} through AgriCtec is not open yet. You can compare its loan "
+        "products here and contact the lender through its official channels.",
+        code="applications_not_open",
     )
-    row.history.append(
-        LoanStatusEvent(position=0, status="submitted", by=farmer.profile.name or "Farmer", at=now)
-    )
-    db.add(row)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise Conflict("Please try again.") from None
-    bus.publish("loans")
-    return loan_out(row)
 
 
 # ---------- Applications: admin side ----------
@@ -283,10 +506,8 @@ def review(db: DB, app_id: str) -> LoanReview:
     farmer = load_farmer(db, app.user_id)
     config = platform_store.credit_config(db)
     score = calculate_credit_score(farmer.records, farmer.momo, farmer.profile, config).score
-    lender = next((l for l in platform_store.lenders(db, include_inactive=True) if l.id == app.partner_id), None)
     checks = eligibility_checks(
-        amount=float(app.amount), months=app.months, records=farmer.records, score=score, lender=lender,
-        rules=config.eligibility,
+        amount=float(app.amount), records=farmer.records, score=score, rules=config.eligibility
     )
     return LoanReview.model_validate({"farmerExists": True, "currentScore": score, "checks": checks})
 
@@ -346,7 +567,7 @@ def export_csv(db: DB, actor: Admin, ids: list[str] | None) -> str:
     """No farmer contact details. Only the count is logged."""
     apps = [a for a in list_applications(db) if ids is None or a.id in ids]
     farmers = load_farmers(db, list({a.user_id for a in apps}))
-    lenders = {l.id: l.name for l in platform_store.lenders(db, include_inactive=True)}
+    lenders = {row.id: row.name for row in db.scalars(select(Lender))}
 
     def farmer(a, field: str) -> str:
         data = farmers.get(a.user_id)

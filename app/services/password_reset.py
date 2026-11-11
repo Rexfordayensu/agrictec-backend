@@ -21,7 +21,7 @@ from app.core.errors import AppError
 from app.core.security import hash_password
 from app.core.sessions import end_sessions_for
 from app.domain.clock import now_utc
-from app.domain.passwords import FARMER_PASSWORD_MIN_LENGTH
+from app.domain.passwords import farmer_password_problem
 from app.integrations import messaging
 from app.models import PasswordReset, Profile, User
 from app.schemas.farm import Session
@@ -134,9 +134,9 @@ def confirm_reset(db: DB, email: str, code: str, new_password: str) -> tuple[str
         reset.attempts += 1
         db.commit()
         raise AppError(BAD_CODE, code="invalid_code")
-    if len(new_password) < FARMER_PASSWORD_MIN_LENGTH:
+    if problem := farmer_password_problem(new_password):
         db.rollback()
-        raise AppError(f"Password must be at least {FARMER_PASSWORD_MIN_LENGTH} characters")
+        raise AppError(problem)
     reset.used_at = now
     user.password_hash = hash_password(new_password)
     user.must_change_password = False

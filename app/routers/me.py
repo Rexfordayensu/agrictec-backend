@@ -14,7 +14,7 @@ from app.routers.common import set_onboarded_hint
 from app.schemas import farm as f
 from app.schemas.base import CamelModel, Confirmation, Message
 from app.schemas.platform import Announcement
-from app.services import account, farm, lending, notifications, subscriptions, tools, verifications
+from app.services import account, farm, lending, notifications, phone_verification, subscriptions, tools, verifications
 
 router = APIRouter(prefix="/me", tags=["Farmer"])
 
@@ -72,10 +72,10 @@ def create_record(body: f.RecordInput, ctx: Writer, db: Database):
     return farm.create_record(db, ctx.user.id, body)
 
 
-@router.put("/records", response_model=list[f.FarmRecord])
-def replace_records(body: list[f.RecordInput], ctx: Writer, db: Database):
-    """Replaces every record (sample data, "clear all")."""
-    return farm.replace_records(db, ctx.user.id, body)
+@router.delete("/records", status_code=204)
+def clear_records(ctx: Writer, db: Database):
+    """Deletes every record ("clear all"). Records are only ever added one by one."""
+    farm.replace_records(db, ctx.user.id, [])
 
 
 @router.patch("/records/{record_id}", response_model=f.FarmRecord)
@@ -101,9 +101,10 @@ def create_momo(body: f.MomoInput, ctx: Writer, db: Database):
     return farm.create_momo(db, ctx.user.id, body)
 
 
-@router.put("/momo", response_model=list[f.MomoTransaction])
-def replace_momo(body: list[f.MomoInput], ctx: Writer, db: Database):
-    return farm.replace_momo(db, ctx.user.id, body)
+@router.delete("/momo", status_code=204)
+def clear_momo(ctx: Writer, db: Database):
+    """Deletes every MoMo transaction ("clear all")."""
+    farm.replace_momo(db, ctx.user.id, [])
 
 
 @router.patch("/momo/{momo_id}", response_model=f.MomoTransaction)
@@ -124,12 +125,6 @@ def list_diagnoses(ctx: Reader, db: Database):
     return farm.list_diagnoses(db, ctx.user.id)
 
 
-@router.post("/diagnoses", response_model=f.Diagnosis, status_code=201)
-def save_diagnosis(body: f.DiagnosisInput, ctx: Writer, db: Database):
-    """Saves a diagnosis to history (the 10 most recent are kept)."""
-    return farm.create_diagnosis(db, ctx.user.id, body)
-
-
 @router.delete("/diagnoses/{diagnosis_id}", status_code=204)
 def delete_diagnosis(diagnosis_id: str, ctx: Writer, db: Database):
     farm.delete_diagnosis(db, ctx.user.id, diagnosis_id)
@@ -143,11 +138,6 @@ def clear_diagnoses(ctx: Writer, db: Database):
 @router.get("/chat", response_model=list[f.ChatMessage])
 def list_chat(ctx: Reader, db: Database):
     return farm.list_chat(db, ctx.user.id)
-
-
-@router.put("/chat", status_code=204)
-def save_chat(body: list[f.ChatMessage], ctx: Writer, db: Database):
-    farm.save_chat(db, ctx.user.id, body)
 
 
 @router.delete("/chat", status_code=204)
@@ -196,10 +186,21 @@ def list_verifications(ctx: Reader, db: Database):
     return verifications.list_for_farmer(db, ctx.user.id)
 
 
+@router.post(
+    "/phone/code",
+    response_model=f.PhoneCodeSent,
+    dependencies=[Depends(rate_limit("phone-code", 5, 600))],
+)
+def send_phone_code(ctx: Writer, db: Database):
+    """Texts a six-digit code to the phone number saved on the profile (10 minutes)."""
+    return phone_verification.send_code(db, ctx.user.id)
+
+
 @router.post("/verifications", response_model=f.VerificationRequest, status_code=201)
 def submit_verification(body: f.VerificationSubmit, ctx: Writer, db: Database):
-    """Phone and location pass at once; a Ghana Card (full number) waits for an admin."""
-    return verifications.submit(db, ctx.user.id, body.kind, body.value).model_copy(
+    """A phone passes with the code texted to it (POST /me/phone/code); a farm location and a
+    Ghana Card (full number) wait for an admin's review."""
+    return verifications.submit(db, ctx.user.id, body.kind, body.value, body.code).model_copy(
         update={"identity_check": None}
     )
 
@@ -284,7 +285,8 @@ def scan_crop(
     image: Annotated[UploadFile, File(description="A photo of the crop, up to 10 MB")],
     crop: Annotated[str | None, Form()] = None,
 ):
-    """Spends 5 AI credits, only when a diagnosis is produced. Save it with POST /me/diagnoses."""
+    """Spends 5 AI credits, only when a diagnosis is produced. The diagnosis is saved to the
+    farmer's history (the 10 most recent are kept) and returned as `diagnosis`."""
     content = image.file.read(MAX_IMAGE_BYTES + 1)
     return tools.scan_crop(db, ctx.user.id, image.filename or "photo", image.content_type, content, crop)
 

@@ -106,7 +106,6 @@ def related(db: DB, flag_id: str) -> a.RiskRelated:
         raise NotFound("Risk flag not found.")
     config = platform_store.credit_config(db)
     kind = RULES_BY_ID[row.rule].related
-    ids = set(row.related_ids)
     wanted = [row.user_id, *row.related_ids] if kind == "accounts" else None
     farmers = load_farmers(db, wanted)
     risk = confirmed_risk_counts(db)
@@ -120,14 +119,5 @@ def related(db: DB, flag_id: str) -> a.RiskRelated:
     if kind == "accounts":
         others = [account(uid) for uid in row.related_ids if uid in farmers]
         return a.RiskRelated(kind=kind, farmer=farmer, accounts=[farmer, *others], momo=[], records=[])
-    if kind == "momo":
-        # A duplicate reference can sit on other accounts too: look through every farmer.
-        momo = [
-            a.RelatedMomo(**t.model_dump(), owner_name=d.profile.name or d.user.email, related=t.id in ids)
-            for uid, d in farmers.items()
-            for t in d.momo
-            if t.id in ids or uid == row.user_id
-        ]
-        return a.RiskRelated(kind=kind, farmer=farmer, accounts=[], momo=momo, records=[])
-    records = [a.RelatedRecord(**r.model_dump(), related=r.id in ids) for r in farmers[row.user_id].records]
-    return a.RiskRelated(kind=kind, farmer=farmer, accounts=[], momo=[], records=records)
+    # Risk summaries remain available; raw financial entries are confined to the review queue.
+    return a.RiskRelated(kind=kind, farmer=farmer, accounts=[], momo=[], records=[])

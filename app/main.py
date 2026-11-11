@@ -3,6 +3,7 @@
 Run it with:  uvicorn app.main:app --reload   (from the backend folder; docs at /docs)."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -33,6 +34,16 @@ def _message(errors: list[dict]) -> str:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings = get_settings()
+    if settings.environment == "production" and not settings.frontend_proxy_secret:
+        # Requests forwarded by Vercel arrive from its shared addresses: without the secret,
+        # every visitor would share a handful of rate-limit buckets.
+        logging.getLogger("agrictec").warning(
+            "FRONTEND_PROXY_SECRET is not set: rate limits cannot tell visitors apart behind Vercel. "
+            "Set the same random value (32+ characters) on the API and the web app."
+        )
+    elif settings.frontend_proxy_secret and len(settings.frontend_proxy_secret) < 32:
+        logging.getLogger("agrictec").warning("FRONTEND_PROXY_SECRET is short: use 32+ random characters.")
     with SessionLocal() as db:
         bootstrap(db, seed_demo_data=get_settings().seed_demo_data)
     alerts.refresh_devices()
@@ -69,7 +80,9 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def app_error(_: Request, error: AppError):
-        return JSONResponse(status_code=error.status_code, content={"detail": error.message, "code": error.code})
+        return JSONResponse(
+            status_code=error.status_code, content={**error.extra, "detail": error.message, "code": error.code}
+        )
 
     @app.exception_handler(Exception)
     async def crashed(request: Request, error: Exception):
@@ -98,7 +111,9 @@ def create_app() -> FastAPI:
             content={"detail": _message(errors), "code": "invalid", "errors": _jsonable(errors)},
         )
 
-    for router in (auth.router, me.router, platform.router, admin_auth.router, admin_people.router,
+    from app.routers import transactions
+
+    for router in (transactions.router, auth.router, me.router, platform.router, admin_auth.router, admin_people.router,
                    admin_lending.router, admin_platform.router):
         app.include_router(router, prefix=settings.api_prefix)
     return app

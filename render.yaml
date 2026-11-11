@@ -32,6 +32,13 @@ services:
         value: "5"
       - key: SECRET_KEY
         generateValue: true
+      # Keys the Ghana Card fingerprints, apart from SECRET_KEY so that one can be rotated.
+      - key: GHANA_CARD_HASH_KEY
+        generateValue: true
+      # The same random value (32+ characters) as FRONTEND_PROXY_SECRET on Vercel: the web app
+      # then vouches for each visitor's address (rate limits, admin lockouts).
+      - key: FRONTEND_PROXY_SECRET
+        sync: false
       - key: COOKIE_SECURE
         value: "true"
       - key: SEED_DEMO_DATA
@@ -55,3 +62,4 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      # Private lender logos use DATABASE_URL; no separate bucket or token is needed.

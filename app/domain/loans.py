@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from app.domain.clock import as_date
 from app.domain.finance import annualized_net_profit
-from app.domain.fmt import format_ghs, js_round, round_int
+from app.domain.fmt import format_ghs, js_round
 from app.schemas.farm import (
     EligibilityIssue,
     EligibilityResult,
@@ -13,7 +13,7 @@ from app.schemas.farm import (
     LoanApplication,
     RepaymentResult,
 )
-from app.schemas.platform import CreditEligibility, Lender
+from app.schemas.platform import CreditEligibility
 
 # ---------- Farmer side ----------
 
@@ -51,14 +51,13 @@ def check_eligibility(
     records: list[FarmRecord],
     score: int,
     rules: CreditEligibility,
-    partner: Lender | None = None,
     ghana_card: str = "verified",
 ) -> EligibilityResult:
-    """Every failing rule, not just the first. A chosen lender's own minimum score replaces the
-    platform minimum; the platform minimum applies when no lender is chosen."""
+    """Every failing platform rule, not just the first. A lender's own requirements come from
+    its published loan products, never from made-up per-lender numbers."""
     issues: list[EligibilityIssue] = []
     max_affordable = borrowing_limit(annualized_net_profit(records), rules)
-    min_score = partner.min_score if partner else rules.min_score
+    min_score = rules.min_score
 
     if ghana_card != "verified":
         issues.append(EligibilityIssue(code="ghana-card", message=ghana_card_loan_message(ghana_card)))
@@ -83,24 +82,12 @@ def check_eligibility(
                 code="score", message=f"Credit score must be at least {min_score} (yours is {score})."
             )
         )
-    if partner and amount > partner.max_amount:
-        issues.append(
-            EligibilityIssue(
-                code="lender-max",
-                message=f"Above this lender's maximum of {format_ghs(partner.max_amount)}.",
-            )
-        )
     return EligibilityResult(
         eligible=not issues,
         reasons=[i.message for i in issues],
         issues=issues,
         max_affordable=max_affordable,
     )
-
-
-def match_percentage(score: int, partner: Lender) -> int:
-    """How well the farmer's score matches a lender, from 40% to 98%."""
-    return round_int(min(98, max(40, 70 + (score - partner.min_score) / 5)))
 
 
 def _number(value: float) -> str:
@@ -192,48 +179,23 @@ def loan_stats(apps: list[LoanApplication]) -> dict:
     }
 
 
-def lender_stats(apps: list, lender_id: str) -> dict:
-    mine = [a for a in apps if a.partner_id == lender_id]
-    approved = sum(1 for a in mine if a.status in APPROVED_LOAN_STATUSES)
-    rejected = sum(1 for a in mine if a.status == "rejected")
-    return {
-        "applications": len(mine),
-        "underReview": sum(1 for a in mine if a.status == "under_review"),
-        "approvalRate": approved / (approved + rejected) if approved + rejected else None,
-    }
-
-
-def deactivate_block(lender: Lender, apps: list) -> str | None:
-    """Why a lender can't be switched off right now (None = it can)."""
-    if not lender.active:
-        return None
-    reviewing = lender_stats(apps, lender.id)["underReview"]
-    if not reviewing:
-        return None
-    them = "it" if reviewing == 1 else "them"
-    return (
-        f"{lender.name} has {reviewing} application{'' if reviewing == 1 else 's'} under review. "
-        f"Approve or reject {them} first, so no farmer is left waiting on a hidden lender."
-    )
-
-
-def delete_block(lender: Lender, apps: list) -> str | None:
+def delete_block(name: str, applications: int) -> str | None:
     """Why a lender can't be deleted (None = it can): any application keeps its history."""
-    count = lender_stats(apps, lender.id)["applications"]
+    count = applications
     if not count:
         return None
     return (
-        f"{lender.name} has {count} application{'' if count == 1 else 's'} on record, and deleting "
-        "it would break their history. Deactivate it instead."
+        f"{name} has {count} application{'' if count == 1 else 's'} on record, and deleting "
+        "it would break their history. Unpublish or suspend it instead."
     )
 
 
 def eligibility_checks(
-    *, amount: float, months: int, records: list[FarmRecord], score: int, lender: Lender | None, rules: CreditEligibility
+    *, amount: float, records: list[FarmRecord], score: int, rules: CreditEligibility
 ) -> list[dict]:
-    """Every rule the farmer app applies, as pass/fail lines with today's rules."""
+    """Every platform rule, as pass/fail lines with today's rules."""
     limit = borrowing_limit(annualized_net_profit(records), rules)
-    min_score = lender.min_score if lender else rules.min_score
+    min_score = rules.min_score
     checks = [
         {
             "key": "records",
@@ -254,19 +216,4 @@ def eligibility_checks(
             "detail": f"Now {score}",
         },
     ]
-    if lender:
-        checks += [
-            {
-                "key": "lender-max",
-                "label": f"{lender.name} lends up to {format_ghs(lender.max_amount)}",
-                "pass": amount <= lender.max_amount,
-                "detail": f"Asked {format_ghs(amount)}",
-            },
-            {
-                "key": "term",
-                "label": f"Term of {lender.min_months}–{lender.max_months} months",
-                "pass": lender.min_months <= months <= lender.max_months,
-                "detail": f"{months} months",
-            },
-        ]
     return checks

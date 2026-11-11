@@ -2,6 +2,7 @@
 feature flag and the plan, and the AI ones spend credits only when they succeed."""
 
 import re
+import uuid
 from typing import get_args
 
 from sqlalchemy.orm import Session as DB
@@ -9,10 +10,11 @@ from sqlalchemy.orm import Session as DB
 from app.config import get_settings
 from app.core.errors import AppError
 from app.domain.assistant import AssistantContext, lock_loans, match_knowledge, resolve_reply
+from app.domain.clock import now_utc
 from app.domain.constants import Crop
 from app.domain.credit import calculate_credit_score, score_label
 from app.domain.defaults import ASSISTANT_FALLBACK_ID
-from app.domain.diagnosis import IMAGE_TYPES, MAX_IMAGE_BYTES, diagnose
+from app.domain.diagnosis import IMAGE_TYPES, MAX_IMAGE_BYTES
 from app.domain.farming import predict_yield
 from app.domain.finance import total_expenses, total_income
 from app.domain.market import published_prices, unit_label
@@ -88,11 +90,17 @@ def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
         )
     if ctx.weather:
         w = ctx.weather
+        # Claude is told only what the provider gave: a missing figure is said to be missing.
+        if w.get("rainChance") is not None:
+            rain = f"rain chance {w['rainChance']}%"
+        elif w.get("rainMm") is not None:
+            rain = f"rain {w['rainMm']} mm this hour (no rain probability given)"
+        else:
+            rain = "no rain figures given by the weather source"
+        wind = f"wind {w['windKph']} km/h" if w.get("windKph") is not None else "wind not given"
         lines.append(
             f"- Weather at the farm now: {w.get('description')}, {w.get('temp')}°C, humidity "
-            f"{w.get('humidity')}%, "
-            + (f"rain chance {w['rainChance']}%" if w.get("rainChance") is not None else f"rain {w.get('rainMm') or 0} mm this hour (no rain probability given)")
-            + f", wind {w.get('windKph')} km/h"
+            f"{w.get('humidity')}%, {rain}, {wind}"
             + ("; a storm is forecast" if w.get("storm") else "")
         )
     own = {c.lower() for c in ctx.primary_crops}
@@ -101,6 +109,16 @@ def farmer_facts(ctx: AssistantContext, prices: list[MarketPrice]) -> str:
         where = p.market or p.region or "Ghana"
         lines.append(f"- Published price: {p.crop}, GHS {p.price:,.2f} per {unit_label(p)} ({where})")
     return "\n".join(lines)
+
+
+def _save_exchange(db: DB, user_id: str, message: str, reply: AssistantReply) -> list[f.ChatMessage]:
+    """The question and the reply, appended to the conversation by the API itself (the browser
+    can't write the conversation: Claude reads it back as earlier turns)."""
+    now = now_utc()
+    asked = f.ChatMessage(id=f"u-{uuid.uuid4().hex}", role="user", content=message, created_at=now)
+    answered = f.ChatMessage(id=f"a-{uuid.uuid4().hex}", role="ai", content=reply, created_at=now)
+    farm.append_chat(db, user_id, [asked, answered])
+    return [asked, answered]
 
 
 def _recent_turns(db: DB, user_id: str) -> list[tuple[str, object]]:
@@ -138,37 +156,53 @@ def ask_assistant(db: DB, user_id: str, message: str) -> f.AssistantAnswer:
                 reply, source = lock_loans(AssistantReply(**answer), ctx), "ai"
             except claude.AIUnavailable:
                 pass  # The knowledge base's reply stands.
+        messages = _save_exchange(db, user_id, message, reply)
     except Exception:
         subscriptions.settle(db, hold, success=False)
         raise
     snap = subscriptions.settle(db, hold, success=True)
-    return f.AssistantAnswer(reply=reply, credits_remaining=snap.credits_remaining, source=source)
+    return f.AssistantAnswer(reply=reply, credits_remaining=snap.credits_remaining, source=source, messages=messages)
 
 
 def scan_crop(db: DB, user_id: str, filename: str, content_type: str | None, content: bytes, crop: str | None) -> f.DiagnosisAnswer:
-    """Claude reads the photo when configured; otherwise the demonstration results. Credits are
-    spent only when a diagnosis is produced."""
+    """Claude reads the photo; without it the crop doctor is unavailable (it never makes up a
+    diagnosis). The diagnosis is saved to the farmer's history here, with a thumbnail made here.
+    Credits are spent only when a diagnosis is produced."""
+    if not get_settings().ai_enabled:
+        raise AppError(
+            "The crop doctor isn't available right now. Please try again later.",
+            code="ai_unavailable",
+            status_code=503,
+        )
     if content_type not in IMAGE_TYPES:
         raise AppError("Upload a photo (JPEG, PNG, WebP or HEIC).")
     if len(content) > MAX_IMAGE_BYTES:
         raise AppError("The photo is larger than 10 MB. Choose a smaller one.")
-    photo = None
-    if get_settings().ai_enabled:
-        try:
-            photo = claude.prepare_photo(content, content_type)
-        except ValueError as error:
-            raise AppError(str(error)) from error
+    try:
+        photo = claude.prepare_photo(content, content_type)
+    except ValueError as error:
+        raise AppError(str(error)) from error
     hold = subscriptions.reserve(db, user_id, "cropDoctor")
     try:
-        if photo:
-            found = claude.diagnose_photo(photo, crop)
-            # Saved diagnoses take the app's crop names only.
-            found["crop"] = crop if crop in CROPS.values() else CROPS.get((found["crop"] or "").lower())
-            result = f.DiagnosisResultOut(**found, source="ai")
-        else:
-            result = diagnose(filename, len(content), platform_store.diagnoses(db), crop).model_copy(
-                update={"source": "demo"}
-            )
+        found = claude.diagnose_photo(photo, crop)
+        # Saved diagnoses take the app's crop names only.
+        found["crop"] = crop if crop in CROPS.values() else CROPS.get((found["crop"] or "").lower())
+        result = f.DiagnosisResultOut(**found, source="ai")
+        saved = farm.create_diagnosis(
+            db,
+            user_id,
+            f.DiagnosisInput(
+                disease=result.disease,
+                severity=result.severity,
+                confidence=result.confidence,
+                treatment=result.treatment,
+                prevention=result.prevention,
+                crop=result.crop,
+                image_thumb=claude.thumbnail(photo),
+                date=now_utc(),
+                source="ai",
+            ),
+        )
     except claude.NotACropPhoto as error:
         subscriptions.settle(db, hold, success=False)
         raise AppError(f"{error} Take a closer photo of the affected leaves or fruit.") from error
@@ -182,8 +216,11 @@ def scan_crop(db: DB, user_id: str, filename: str, content_type: str | None, con
     except ValueError as error:
         subscriptions.settle(db, hold, success=False)
         raise AppError(str(error)) from error
+    except Exception:
+        subscriptions.settle(db, hold, success=False)
+        raise
     snap = subscriptions.settle(db, hold, success=True)
-    return f.DiagnosisAnswer(result=result, credits_remaining=snap.credits_remaining)
+    return f.DiagnosisAnswer(result=result, credits_remaining=snap.credits_remaining, diagnosis=saved)
 
 
 def predict(db: DB, user_id: str, data: f.YieldInput) -> f.YieldResult:

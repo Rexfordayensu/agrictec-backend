@@ -82,7 +82,8 @@ def test_weather_report_has_the_apps_shape():
     assert report["location"] == KUMASI and report["provider"] == "Open-Meteo"
     assert report["updatedAt"] == "2026-10-28T23:45:00.000Z"
     assert report["current"] == {"temp": 24.1, "description": "Clear sky", "humidity": 95, "rainMm": 0.0, "rainChance": 24, "windKph": 8.1}
-    assert report["daily"][1] == {"date": "2026-10-29", "description": "Showers", "minTemp": 23.0, "maxTemp": 30.1, "rainMm": 6.7, "rainChance": 96, "windKph": 10.0}
+    assert report["daily"][1] == {"date": "2026-10-29", "description": "Showers", "minTemp": 23.0, "maxTemp": 30.1, "rainMm": 6.7, "rainChance": 96, "windKph": 10.0,
+                                  "storm": False}
     assert report["upcoming"][1]["time"] == "2026-10-29T01:00:00.000Z"
     assert weather.coordinates_of(KUMASI) == weather.CITY_COORDS["kumasi"]
 
@@ -183,7 +184,8 @@ def test_openweather_answers_with_a_chance_of_rain_and_its_own_words():
     assert [(h["description"], h["rainChance"]) for h in report["upcoming"]] == [
         ("Light rain", 62), ("Haze", 20), ("Overcast clouds", 0), ("Clear sky", 10), ("Thunderstorm", 90)]
     today, tomorrow = report["daily"]
-    assert today == {"date": "2026-10-30", "description": "Light rain", "minTemp": 26.0, "maxTemp": 31.4, "rainMm": 0.8, "rainChance": 62, "windKph": 18.0}
+    assert today == {"date": "2026-10-30", "description": "Light rain", "minTemp": 26.0, "maxTemp": 31.4, "rainMm": 0.8,
+                     "rainChance": 62, "windKph": 18.0, "storm": False}
     assert (tomorrow["description"], tomorrow["minTemp"], tomorrow["maxTemp"], tomorrow["rainMm"], tomorrow["rainChance"]) == ("Thunderstorm", 25.0, 32.0, 8.2, 90)
 
 
@@ -479,7 +481,7 @@ def test_admin_decisions_reach_the_farmers_inbox_and_sms(settings, monkeypatch):
     farmer = signup()
     farmer.post(f"{API}/me/onboarding/complete", json={**ONBOARDING, "ghanaCard": {"cardNumber": "GHA-123456789-0"}})
     boss = super_admin()
-    pending = boss.get(f"{API}/admin/verifications", params={"status": "pending"}).json()[0]
+    pending = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     boss.post(f"{API}/admin/verifications/{pending['id']}/approve")
     inbox = farmer.get(f"{API}/me/notifications").json()
     assert inbox["unread"] == 1 and inbox["items"][0]["title"] == "Your Ghana Card is verified"
@@ -557,7 +559,7 @@ def test_identity_checks_are_advice_for_reviewers_only(settings, monkeypatch):
     assert mine["identityCheck"] is None  # farmers never see it
     assert seen["id_type"] == "GHANA_CARD" and seen["country"] == "GH" and seen["first_name"] == "Ama"
     assert seen["signature"] == identity.signature("secret", "1234", seen["timestamp"])
-    review = super_admin().get(f"{API}/admin/verifications", params={"status": "pending"}).json()[0]
+    review = super_admin().get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
     assert review["identityCheck"]["result"] == "verified" and review["identityCheck"]["names"] == "Exact Match"
     assert "123456789" not in json.dumps(review)
 
@@ -625,14 +627,15 @@ def test_workers_starting_together_bootstrap_once():
     from sqlalchemy import func, select, text
 
     from app.db import Base, SessionLocal, engine
-    from app.domain.defaults import DEFAULT_LENDERS
     from app.models import Admin, CreditConfigVersion, Lender
     from app.services.backup import bootstrap
 
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_truncate"))
+        conn.execute(text("ALTER TABLE transaction_verifications DISABLE TRIGGER transaction_history_no_truncate"))
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        conn.execute(text("ALTER TABLE transaction_verifications ENABLE TRIGGER transaction_history_no_truncate"))
         conn.execute(text("ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_truncate"))
     errors = []
     start = threading.Barrier(4)
@@ -653,5 +656,6 @@ def test_workers_starting_together_bootstrap_once():
     assert errors == []
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(CreditConfigVersion)) == 1
-        assert db.scalar(select(func.count()).select_from(Lender)) == len(DEFAULT_LENDERS)
+        # A live platform starts with no lenders: administrators add the real ones.
+        assert db.scalar(select(func.count()).select_from(Lender)) == 0
         assert db.scalar(select(func.count()).select_from(Admin)) == 1

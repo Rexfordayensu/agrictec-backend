@@ -2,6 +2,7 @@
 lib/admin/verification-queue.ts, lib/verification.ts)."""
 
 import hashlib
+import hmac
 import re
 
 REJECT_REASONS = ["Number format invalid", "Doesn't match name", "Duplicate", "Unclear", "Other"]
@@ -12,8 +13,7 @@ GHANA_PHONE = re.compile(r"^(\+233|0)[235]\d{8}$")
 GHANA_CARD = re.compile(r"^GHA-\d{9}-\d$")
 MASKED_CARD = re.compile(r"^GHA-\*{6}\d{3}-\d$")
 
-# Keeps these fingerprints apart from any other SHA-256 of the same digits. The same prefix as
-# the browser's, so fingerprints made during onboarding match the server's.
+# Keeps these fingerprints apart from any other keyed hash made with the same key.
 _CARD_HASH_PREFIX = "agrictec:ghana-card:"
 
 
@@ -32,10 +32,16 @@ def mask_full_ghana_card(card_number: str) -> str:
 
 
 def hash_ghana_card(card_number: str) -> str:
-    """The stored fingerprint of a full Ghana Card number (SHA-256, hex). The number itself is
-    never stored."""
+    """The stored fingerprint of a full Ghana Card number (HMAC-SHA256, hex). The number itself
+    is never stored. Keyed with a server secret (GHANA_CARD_HASH_KEY, else SECRET_KEY): there are
+    only about ten billion card numbers, so a plain hash could be reversed by trying them all.
+    Only the server computes it, so a fingerprint can't be made up to dodge the duplicate check."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    key = (settings.ghana_card_hash_key or settings.secret_key).encode("utf-8")
     text = _CARD_HASH_PREFIX + card_number.strip().upper()
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def rejection_message(reason: str | None, note: str | None) -> str:
