@@ -13,7 +13,7 @@ cover fewer months than asked for, the summary says so (`insufficient`) and repo
   recorded, over all time (a loan may predate the period). Not a confirmed debt."""
 
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.domain.clock import add_months, month_start
@@ -28,6 +28,15 @@ STATUSES = [
     "disputed",
 ]
 PERIODS = (3, 6, 12)
+
+# Farm income and expense categories, grouped for the "by category" chart. Anything else
+# (other income, land rent, other costs, uncategorised) is "Other".
+CATEGORY_GROUPS = [
+    ("crop_sales", "Crop sales", {"crop_sale", "produce_delivery"}),
+    ("livestock_sales", "Livestock sales", {"livestock_sale"}),
+    ("farm_inputs", "Farm inputs", {"fertilizer", "seed", "equipment", "irrigation"}),
+    ("labour_services", "Labour & services", {"labour", "transport"}),
+]
 
 
 def money(value: Decimal) -> str:
@@ -68,6 +77,13 @@ class _Line:
             "selfReported": money(self.total - self.verified),
             "verifiedShare": share(self.verified, self.total),
         }
+
+
+def change(now: Decimal, before: Decimal) -> str | None:
+    """Percent change on the previous period, or None when it had nothing to compare with."""
+    if not before:
+        return None
+    return f"{((now - before) / abs(before) * 100).quantize(Decimal('0.01'))}"
 
 
 def period_bounds(months: int, today: date) -> tuple[date, date]:
@@ -144,6 +160,28 @@ def build(farm: list, momo: list, months: int, today: date) -> dict:
     chart_from = (max(start, month_start(first_recorded)) if first_recorded else month_start(end)).strftime("%Y-%m")
     stamps = [row.created_at for row in [*farm, *momo] if isinstance(getattr(row, "created_at", None), datetime)]
     net = income.total - expenses.total
+
+    # The same number of whole months just before this period, for "vs previous 6 months".
+    prev_start, prev_end = add_months(start, -months), start - timedelta(days=1)
+    prev_income = prev_expenses = ZERO
+    for r in farm:
+        if prev_start <= r.date <= prev_end:
+            if r.type == "income":
+                prev_income += _amount(r)
+            elif r.type == "expense":
+                prev_expenses += _amount(r)
+    prev_net = prev_income - prev_expenses
+
+    # Farm income and expenses in this period by category group.
+    groups = {key: ZERO for key, _, _ in CATEGORY_GROUPS} | {"other": ZERO}
+    for r in farm_now:
+        if r.type not in ("income", "expense"):
+            continue
+        category = getattr(r, "category", None)
+        key = next((k for k, _, members in CATEGORY_GROUPS if category in members), "other")
+        groups[key] += _amount(r)
+    category_total = income.total + expenses.total
+    labels = {key: label for key, label, _ in CATEGORY_GROUPS} | {"other": "Other"}
     return {
         "currency": "GHS",
         "period": {"from": start.isoformat(), "to": end.isoformat(), "months": months},
@@ -190,6 +228,23 @@ def build(farm: list, momo: list, months: int, today: date) -> dict:
             }
             for r in repayments
         ],
+        "previous": {
+            "from": prev_start.isoformat(),
+            "to": prev_end.isoformat(),
+            "income": money(prev_income),
+            "expenses": money(prev_expenses),
+            "net": money(prev_net),
+        },
+        "changeOnPrevious": {
+            "income": change(income.total, prev_income),
+            "expenses": change(expenses.total, prev_expenses),
+            "net": change(net, prev_net),
+        },
+        "byCategory": [
+            {"key": key, "label": labels[key], "amount": money(amount), "share": share(amount, category_total)}
+            for key, amount in groups.items()
+        ],
+        "categoryTotal": money(category_total),
         "monthsWithRecords": len(active_months),
         "insufficient": len(active_months) < months,
     }
