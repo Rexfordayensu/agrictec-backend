@@ -15,6 +15,7 @@ from app.models import (
     Diagnosis,
     FarmRecord,
     FinancialReportExport,
+    LoanEligibilityAssessment,
     MomoTransaction,
     OnboardingDraft,
     TransactionEvidence,
@@ -213,6 +214,8 @@ def delete_data(db: DB, user_id: str, confirmation: str) -> None:
     _clear_own_data(db, user_id)
     # The report cleanup trigger removes each stored PDF in this same transaction.
     db.execute(delete(FinancialReportExport).where(FinancialReportExport.user_id == user_id))
+    # Eligibility checks hold the farmer's financial figures: they go too.
+    db.execute(delete(LoanEligibilityAssessment).where(LoanEligibilityAssessment.user_id == user_id))
     row = db.get(Profile, user_id)
     if row:
         kept = {

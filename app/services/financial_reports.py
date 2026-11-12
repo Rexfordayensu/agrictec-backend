@@ -41,14 +41,22 @@ def _entries(db: DB, user_id: str, months: int) -> list[dict]:
     )):
         kind = FARM_KINDS.get(r.type) or f"Financing {'in' if r.direction == 'in' else 'out'}"
         rows.append({"date": r.date.isoformat(), "kind": kind, "description": r.description,
-                     "amount": f"{r.amount:.2f}", "status": r.verification_status, "source": r.source_type})
+                     "amount": f"{r.amount:.2f}", "status": r.verification_status, "source": r.source_type,
+                     "recorded": _recorded(r.created_at)})
     for t in db.scalars(select(MomoTransaction).where(
         MomoTransaction.user_id == user_id, MomoTransaction.date >= start, MomoTransaction.date <= end
     )):
         rows.append({"date": t.date.isoformat(), "kind": f"MoMo {'in' if t.direction == 'in' else 'out'}",
                      "description": t.counterparty, "amount": f"{t.amount:.2f}",
-                     "status": t.verification_status, "source": t.source_type})
-    return sorted(rows, key=lambda e: e["date"], reverse=True)
+                     "status": t.verification_status, "source": t.source_type,
+                     "recorded": _recorded(t.created_at)})
+    return sorted(rows, key=lambda e: (e["date"], e["recorded"]), reverse=True)
+
+
+def _recorded(at) -> str:
+    """When the entry was saved in AgriCtec, in Ghana time (GMT)."""
+    return at.strftime("%d %b %Y %H:%M") if at else ""
+
 
 
 def create(db: DB, user_id: str, months: int) -> dict:
