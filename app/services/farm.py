@@ -175,6 +175,15 @@ def _momo(db: DB, user_id: str, momo_id: str) -> MomoTransaction:
     return transactions.entry(db, "momo", momo_id, user_id, lock=True)
 
 
+def momo_summary(db: DB, user_id: str) -> dict:
+    """The MoMo page's totals (app/domain/momo_summary.py), from the farmer's saved entries."""
+    from app.domain import momo_summary as summary
+    from app.domain.clock import today
+
+    rows = list(db.scalars(select(MomoTransaction).where(MomoTransaction.user_id == user_id)))
+    return summary.build(rows, today())
+
+
 def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
     rows = list(db.scalars(
         select(MomoTransaction)

@@ -94,6 +94,13 @@ def delete_record(record_id: str, ctx: Writer, db: Database):
 # ---------- MoMo ----------
 
 
+@router.get("/momo/summary")
+def momo_summary(ctx: Reader, db: Database):
+    """Exact MoMo totals for the MoMo page: all time, this and last month, the last six months,
+    by network and by verification status. Money is decimal text."""
+    return farm.momo_summary(db, ctx.user.id)
+
+
 @router.get("/momo", response_model=list[f.MomoTransaction])
 def list_momo(ctx: Reader, db: Database):
     return farm.list_momo(db, ctx.user.id)
