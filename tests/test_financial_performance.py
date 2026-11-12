@@ -232,3 +232,47 @@ def test_the_overview_counts_farmers_with_verified_entries():
     boss = super_admin()
     coverage = boss.get(f"{API}/admin/overview").json()["evidenceCoverage"]
     assert coverage == {"farmers": 0, "total": 1, "share": "0.00"}
+
+
+def test_change_on_the_previous_period_of_the_same_length():
+    # 6 months to 12 Nov 2026 is Jun-Nov; the previous 6 months are Dec 2025 - May 2026.
+    farm = [
+        row("income", "1220", on=date(2026, 7, 1)), row("expense", "540", on=date(2026, 8, 1)),
+        row("income", "1000", on=date(2026, 5, 31)), row("expense", "500", on=date(2025, 12, 1)),
+        row("income", "9999", on=date(2025, 11, 30)),  # before the previous period
+    ]
+    s = financial_summary.build(farm, [], 6, TODAY)
+    assert s["previous"] == {"from": "2025-12-01", "to": "2026-05-31", "income": "1000.00",
+                             "expenses": "500.00", "net": "500.00"}
+    assert s["changeOnPrevious"] == {"income": "22.00", "expenses": "8.00", "net": "36.00"}
+
+
+def test_no_previous_figures_means_no_made_up_change():
+    s = financial_summary.build([row("income", "100")], [], 6, TODAY)
+    assert s["changeOnPrevious"] == {"income": None, "expenses": None, "net": None}
+
+
+def test_a_loss_compared_with_a_loss_keeps_its_direction():
+    farm = [row("expense", "300", on=date(2026, 7, 1)), row("expense", "100", on=date(2026, 3, 1))]
+    s = financial_summary.build(farm, [], 6, TODAY)
+    # Net went from -100 to -300: 200% worse, shown as a fall.
+    assert s["changeOnPrevious"]["net"] == "-200.00"
+
+
+def test_income_and_expenses_by_category_group():
+    farm = [
+        row("income", "480", category="crop_sale"), row("income", "120", category="livestock_sale"),
+        row("expense", "240", category="fertilizer"), row("expense", "80", category="labour"),
+        row("expense", "80"),  # uncategorised: Other
+        row("financing", "5000", direction="in", category="loan_disbursement"),  # never counted here
+    ]
+    s = financial_summary.build(farm, [momo("in", "999")], 6, TODAY)
+    groups = {g["key"]: (g["label"], g["amount"], g["share"]) for g in s["byCategory"]}
+    assert s["categoryTotal"] == "1000.00"
+    assert groups == {
+        "crop_sales": ("Crop sales", "480.00", "48.00"),
+        "livestock_sales": ("Livestock sales", "120.00", "12.00"),
+        "farm_inputs": ("Farm inputs", "240.00", "24.00"),
+        "labour_services": ("Labour & services", "80.00", "8.00"),
+        "other": ("Other", "80.00", "8.00"),
+    }

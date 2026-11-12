@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as DB
 
 from app.core.errors import AppError, NotFound
+from app.core.events import bus
 from app.domain.clock import now_utc, today
 from app.domain.verification import normalize_phone
 from app.domain.transactions import transition
@@ -123,6 +124,7 @@ def create_record(db: DB, user_id: str, data: f.RecordInput) -> f.FarmRecord:
     db.flush()
     transactions.change_status(db, row, "farm", transition(None, "create"), initial=True)
     db.commit()
+    bus.publish("account", user_id)
     return mappers.record_out(row)
 
 
@@ -147,12 +149,14 @@ def update_record(db: DB, user_id: str, record_id: str, patch: f.RecordPatch) ->
         setattr(row, key, value)
     row.updated_at = now_utc()
     db.commit()
+    bus.publish("account", user_id)
     return mappers.record_out(row)
 
 
 def delete_record(db: DB, user_id: str, record_id: str) -> None:
     transactions.delete_entry(db, "farm", _record(db, user_id, record_id))
     db.commit()
+    bus.publish("account", user_id)
 
 
 def replace_records(db: DB, user_id: str, items: list[f.RecordInput]) -> list[f.FarmRecord]:
@@ -162,6 +166,7 @@ def replace_records(db: DB, user_id: str, items: list[f.RecordInput]) -> list[f.
     now = now_utc()
     db.add_all(FarmRecord(user_id=user_id, created_at=now, **_record_fields(i.model_dump())) for i in items)
     db.commit()
+    bus.publish("account", user_id)
     return list_records(db, user_id)
 
 
@@ -204,6 +209,7 @@ def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
     db.flush()
     transactions.change_status(db, row, "momo", transition(None, "create"), initial=True)
     db.commit()
+    bus.publish("account", user_id)
     return mappers.momo_out(row)
 
 
@@ -221,12 +227,14 @@ def update_momo(db: DB, user_id: str, momo_id: str, patch: f.MomoPatch) -> f.Mom
         setattr(row, key, value)
     row.updated_at = now_utc()
     db.commit()
+    bus.publish("account", user_id)
     return mappers.momo_out(row)
 
 
 def delete_momo(db: DB, user_id: str, momo_id: str) -> None:
     transactions.delete_entry(db, "momo", _momo(db, user_id, momo_id))
     db.commit()
+    bus.publish("account", user_id)
 
 
 def replace_momo(db: DB, user_id: str, items: list[f.MomoInput]) -> list[f.MomoTransaction]:
@@ -238,6 +246,7 @@ def replace_momo(db: DB, user_id: str, items: list[f.MomoInput]) -> list[f.MomoT
         values["reference"] = (values["reference"] or "").strip() or None
         db.add(MomoTransaction(user_id=user_id, created_at=now, **values))
     db.commit()
+    bus.publish("account", user_id)
     return list_momo(db, user_id)
 
 
