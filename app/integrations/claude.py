@@ -96,8 +96,10 @@ local agricultural extension officer, or the app's Crop Doctor for a photo of a 
 How the app works, for questions about it: the AgriCtec score (300-850) is the app's own \
 measure of record keeping, not a credit bureau score. It comes from payment history, how complete \
 the farm records are, income stability, mobile money activity and verification, and keeping \
-records regularly is the surest way to raise it. The score never decides a loan: each lender sets \
-its own requirements, shown with its loan products in the app, and applying needs a verified \
+records regularly is the surest way to raise it. It is feedback on completeness and consistency, \
+never a loan qualification or rejection rule. Lenders review the farmer's actual transaction \
+history and supporting evidence against their own requirements, shown with their loan products \
+in the app, and applying needs a verified \
 Ghana Card. Never say the farmer qualifies, is eligible or can borrow a given amount, and never \
 promise that a loan will be approved.
 

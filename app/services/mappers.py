@@ -63,7 +63,32 @@ def transaction_metadata(row, kind: str, include_history: bool = True) -> dict:
                 evidence_count=count or 0, history=[f.StatusHistory.model_validate(h) for h in history])
 
 
-def record_out(row: m.FarmRecord, *, include_history: bool = True) -> f.FarmRecord:
+def transaction_metadata_many(db, rows, kind: str) -> dict[str, dict]:
+    """Load histories and evidence counts in two queries for an entire transaction list."""
+    metadata = {row.id: transaction_metadata(row, kind, include_history=False) for row in rows}
+    if not metadata:
+        return metadata
+    owners = {row.id: row.user_id for row in rows}
+    history = db.scalars(select(m.TransactionVerification).where(
+        m.TransactionVerification.record_kind == kind,
+        m.TransactionVerification.record_id.in_(metadata),
+        m.TransactionVerification.user_id.in_(set(owners.values())),
+    ).order_by(m.TransactionVerification.at, m.TransactionVerification.id))
+    for item in history:
+        if item.user_id == owners[item.record_id]:
+            metadata[item.record_id]["history"].append(f.StatusHistory.model_validate(item))
+    counts = db.execute(select(
+        m.TransactionEvidenceLink.record_id, func.count(),
+    ).where(
+        m.TransactionEvidenceLink.record_kind == kind,
+        m.TransactionEvidenceLink.record_id.in_(metadata),
+    ).group_by(m.TransactionEvidenceLink.record_id))
+    for record_id, count in counts:
+        metadata[record_id]["evidence_count"] = count
+    return metadata
+
+
+def record_out(row: m.FarmRecord, *, include_history: bool = True, metadata: dict | None = None) -> f.FarmRecord:
     return f.FarmRecord(
         id=row.id,
         user_id=row.user_id,
@@ -74,12 +99,12 @@ def record_out(row: m.FarmRecord, *, include_history: bool = True) -> f.FarmReco
         date=row.date,
         notes=row.notes,
         direction=row.direction,
-        **transaction_metadata(row, "farm", include_history),
+        **(metadata if metadata is not None else transaction_metadata(row, "farm", include_history)),
         created_at=row.created_at,
     )
 
 
-def momo_out(row: m.MomoTransaction, *, include_history: bool = True) -> f.MomoTransaction:
+def momo_out(row: m.MomoTransaction, *, include_history: bool = True, metadata: dict | None = None) -> f.MomoTransaction:
     return f.MomoTransaction(
         id=row.id,
         user_id=row.user_id,
@@ -89,7 +114,7 @@ def momo_out(row: m.MomoTransaction, *, include_history: bool = True) -> f.MomoT
         reference=row.reference,
         notes=row.notes,
         reference_duplicate=row.reference_duplicate,
-        **transaction_metadata(row, "momo", include_history),
+        **(metadata if metadata is not None else transaction_metadata(row, "momo", include_history)),
         network=row.network,
         date=row.date,
         created_at=row.created_at,
