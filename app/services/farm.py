@@ -98,12 +98,13 @@ def _record(db: DB, user_id: str, record_id: str) -> FarmRecord:
 
 def list_records(db: DB, user_id: str) -> list[f.FarmRecord]:
     """Newest first, by date and then by creation time."""
-    rows = db.scalars(
+    rows = list(db.scalars(
         select(FarmRecord)
         .where(FarmRecord.user_id == user_id)
         .order_by(FarmRecord.date.desc(), FarmRecord.created_at.desc())
-    )
-    return [mappers.record_out(r) for r in rows]
+    ))
+    metadata = mappers.transaction_metadata_many(db, rows, "farm")
+    return [mappers.record_out(r, metadata=metadata[r.id]) for r in rows]
 
 
 def _check_date(value) -> None:
@@ -175,12 +176,13 @@ def _momo(db: DB, user_id: str, momo_id: str) -> MomoTransaction:
 
 
 def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
-    rows = db.scalars(
+    rows = list(db.scalars(
         select(MomoTransaction)
         .where(MomoTransaction.user_id == user_id)
         .order_by(MomoTransaction.date.desc(), MomoTransaction.created_at.desc())
-    )
-    return [mappers.momo_out(r) for r in rows]
+    ))
+    metadata = mappers.transaction_metadata_many(db, rows, "momo")
+    return [mappers.momo_out(r, metadata=metadata[r.id]) for r in rows]
 
 
 def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:

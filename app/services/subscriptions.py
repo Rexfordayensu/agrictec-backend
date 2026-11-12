@@ -22,7 +22,7 @@ from app.domain.plans import (
     plan_access,
 )
 from app.integrations import paystack
-from app.models import CreditReservation, Payment, Subscription
+from app.models import CreditReservation, Payment, Subscription, User
 from app.schemas.farm import MockPayment, SubscriptionSnapshot, SubscriptionState
 from app.services import platform_store
 
@@ -212,6 +212,11 @@ def _apply_payment(db: DB, payment: Payment, data: dict) -> None:
 def reserve(db: DB, user_id: str, feature: str) -> CreditReservation:
     """Holds the credits one use costs. Committed at once, so two requests can't both spend
     the last credit; settle() keeps or releases the hold."""
+    # Serialize the balance check and hold insert across API workers. Every account has a
+    # user row, including accounts without a subscription row; the commit below releases it
+    # before the slow provider call. A competing request then sees this committed hold.
+    if db.scalar(select(User.id).where(User.id == user_id).with_for_update()) is None:
+        raise Forbidden("This account is no longer available.", code="account_deleted")
     now = now_utc()
     snap = assert_feature(db, user_id, feature, now)
     cost = AI_COSTS[feature]

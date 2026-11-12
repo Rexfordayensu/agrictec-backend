@@ -14,6 +14,7 @@ from app.models import (
     ChatMessage,
     Diagnosis,
     FarmRecord,
+    FinancialReportExport,
     MomoTransaction,
     OnboardingDraft,
     TransactionEvidence,
@@ -173,6 +174,11 @@ def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
         fields = f.ProfileFields.model_validate(data.profile)
     except ValueError as error:
         raise AppError("The profile in this file is invalid.") from error
+    # Imports must follow the same category/direction rules as ordinary entry forms.
+    from app.domain.transactions import validate_fields
+    for kind, entries in (("farm", data.records), ("momo", data.momo)):
+        for entry in entries:
+            validate_fields(kind, entry.model_dump())
     _clear_own_data(db, user_id, keep_ai_history=True)
     now = now_utc()
     row = farm.get_profile_row(db, user_id)
@@ -205,6 +211,8 @@ def delete_data(db: DB, user_id: str, confirmation: str) -> None:
     if confirmation != "DELETE":
         raise AppError("Type DELETE to confirm.")
     _clear_own_data(db, user_id)
+    # The report cleanup trigger removes each stored PDF in this same transaction.
+    db.execute(delete(FinancialReportExport).where(FinancialReportExport.user_id == user_id))
     row = db.get(Profile, user_id)
     if row:
         kept = {
