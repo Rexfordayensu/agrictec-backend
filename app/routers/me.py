@@ -4,7 +4,7 @@ needs the farmer's own session."""
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from pydantic import Field
 from sqlalchemy.orm import Session as DB
 
@@ -92,6 +92,22 @@ def delete_record(record_id: str, ctx: Writer, db: Database):
 
 
 # ---------- MoMo ----------
+
+
+@router.get("/momo/statement", dependencies=[Depends(rate_limit("momo-statement", 10, 3600))])
+def momo_statement(
+    ctx: Reader, db: Database,
+    period: Literal["all", "month", "3m", "year"] = "all",
+    network: Literal["MTN", "Telecel", "AirtelTigo"] | None = None,
+    direction: Literal["in", "out"] | None = None,
+    status: Literal["self_reported", "evidence_submitted", "verification_pending", "verified", "rejected", "disputed"] | None = None,
+    query: str = Query("", max_length=120), newest_first: bool = True,
+):
+    from app.services.momo_statement import render
+    from app.domain.clock import today
+    data = render(db, ctx.user.id, period=period, network=network, direction=direction,
+                  status=status, query=query, newest_first=newest_first)
+    return attachment((f"AgriCtec_MoMo_Statement_{today().isoformat()}.pdf", data, "application/pdf"))
 
 
 @router.get("/momo/summary")
