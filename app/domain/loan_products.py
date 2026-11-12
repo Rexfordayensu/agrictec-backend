@@ -32,12 +32,34 @@ METRICS: dict[str, dict] = {
     "record_count": {"label": "Number of farm records", "kind": "number"},
     "income_12m": {"label": "Recorded income, last 12 months (GHS)", "kind": "amount"},
     "net_12m": {"label": "Recorded net result, last 12 months (GHS)", "kind": "amount"},
+    # Over the product's assessment period (app/domain/loan_assessment.py).
+    "history_months": {"label": "Months since the first recorded entry", "kind": "number"},
+    "period_income": {"label": "Documented income in the assessment period (GHS)", "kind": "amount"},
+    "period_net": {"label": "Net cash flow in the assessment period (GHS)", "kind": "amount"},
+    "avg_monthly_net": {"label": "Average monthly net cash flow (GHS)", "kind": "amount"},
+    "verified_share": {"label": "Verified share of recorded income and costs (%)", "kind": "percent"},
+    "income_months_share": {"label": "Share of months with recorded income (%)", "kind": "percent"},
+    "debt_burden": {"label": "Existing loan repayments as a share of income (%)", "kind": "percent"},
+    "dscr": {
+        "label": "Debt-service coverage ratio: average monthly net cash flow ÷ (existing monthly "
+                 "loan repayments + this loan's average monthly cost)",
+        "kind": "ratio",
+    },
+}
+
+# Rules about the farmer's finances: each needs the date it took effect and the date it was
+# last confirmed with the lender before it can be published.
+FINANCIAL_METRICS = {
+    "months_of_records", "record_count", "income_12m", "net_12m", "history_months", "period_income",
+    "period_net", "avg_monthly_net", "verified_share", "income_months_share", "debt_burden", "dscr",
 }
 
 OPERATORS_BY_KIND = {
     "bool": {"is_true"},
     "number": {"gte", "lte"},
     "amount": {"gte", "lte"},
+    "percent": {"gte", "lte"},
+    "ratio": {"gte", "lte"},
     "choice": {"in"},
 }
 
@@ -52,9 +74,11 @@ def check_problem(metric: str, op: str, value) -> str | None:
         return f"“{metric}” is not something AgriCtec can check."
     if op not in OPERATORS_BY_KIND[spec["kind"]]:
         return f"{spec['label']} can't be checked with “{op}”."
-    if spec["kind"] in ("number", "amount"):
+    if spec["kind"] in ("number", "amount", "percent", "ratio"):
         if not isinstance(value, (int, float, Decimal)) or isinstance(value, bool) or value < 0:
             return f"{spec['label']}: enter a number of 0 or more."
+        if spec["kind"] == "percent" and value > 100:
+            return f"{spec['label']}: enter a percentage up to 100."
     if spec["kind"] == "choice":
         if not isinstance(value, list) or not value:
             return f"{spec['label']}: choose at least one."
@@ -101,6 +125,15 @@ def publish_problems(content, today: date) -> list[str]:
             issue = check_problem(req.check.metric, req.check.op, req.check.value)
             if issue:
                 problems.append(f"{where}: {issue}")
+            if req.check.metric in FINANCIAL_METRICS:
+                if req.effective_from is None:
+                    problems.append(f"{where}: enter the date this lender rule took effect.")
+                if req.reviewed_on is None:
+                    problems.append(f"{where}: enter the date this rule was last confirmed with the lender.")
+        if req.reviewed_on is not None and req.reviewed_on > today:
+            problems.append(f"{where}: the review date can't be in the future.")
+        if req.reviewed_on is not None and req.review_by is not None and req.review_by < req.reviewed_on:
+            problems.append(f"{where}: the next review date is before the last review.")
         if req.visible_if is not None:
             parent = keys.get(req.visible_if.key)
             if parent is None:

@@ -1,9 +1,11 @@
 """The signed-in farmer's own data (/me). Reads work in the admin's read-only view; every write
 needs the farmer's own session."""
 
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+from pydantic import Field
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import FarmerContext, farmer_context, writable_farmer
@@ -15,7 +17,7 @@ from app.schemas import farm as f
 from app.schemas.base import CamelModel, Confirmation, Message
 from app.schemas.platform import Announcement
 from app.routers.transactions import attachment
-from app.services import account, farm, financial_reports, financial_summary, lending, notifications, phone_verification, subscriptions, tools, verifications
+from app.services import account, farm, financial_reports, financial_summary, lending, loan_eligibility, notifications, phone_verification, subscriptions, tools, verifications
 
 router = APIRouter(prefix="/me", tags=["Farmer"])
 
@@ -197,6 +199,28 @@ def financial_report_file(report_id: str, ctx: Reader, db: Database):
 @router.delete("/reports/financial/{report_id}", status_code=204)
 def delete_financial_report(report_id: str, ctx: Writer, db: Database):
     financial_reports.delete(db, ctx.user.id, report_id)
+
+
+class EligibilityCheck(CamelModel):
+    amount: Annotated[Decimal, Field(gt=0, le=100_000_000, max_digits=14, decimal_places=2)]
+    months: Annotated[int, Field(ge=1, le=360)]
+
+
+@router.post(
+    "/loan-products/{product_id}/eligibility-check",
+    dependencies=[Depends(rate_limit("eligibility-check", 60, 3600))],
+)
+def loan_product_eligibility(product_id: str, body: EligibilityCheck, ctx: Writer, db: Database):
+    """A preliminary, explained check of the signed-in farmer's recorded transactions against
+    one published loan product's terms and rules. Saved with the product version it used.
+    Never a loan decision."""
+    return loan_eligibility.check(db, ctx.user.id, product_id, body.amount, body.months)
+
+
+@router.get("/loan-assessments")
+def loan_assessments(ctx: Reader, db: Database):
+    """The farmer's latest check of each loan product (newest first)."""
+    return loan_eligibility.latest(db, ctx.user.id)
 
 
 @router.post("/loans/eligibility", response_model=f.EligibilityResult)

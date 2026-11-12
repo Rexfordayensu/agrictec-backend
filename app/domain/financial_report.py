@@ -161,12 +161,12 @@ def render(
 
     heading("Entries")
     shown = entries[:MAX_ROWS]
-    with pdf.table(col_widths=(22, 22, 58, 30, 38, 30), first_row_as_headings=True,
-                   text_align=("LEFT", "LEFT", "LEFT", "RIGHT", "LEFT", "LEFT"), line_height=4.5) as table:
-        table.row(["Date", "Kind", "Description", "Amount", "Status", "Source"])
+    with pdf.table(col_widths=(19, 25, 19, 46, 26, 32, 25), first_row_as_headings=True,
+                   text_align=("LEFT", "LEFT", "LEFT", "LEFT", "RIGHT", "LEFT", "LEFT"), line_height=4.5) as table:
+        table.row(["Date", "Recorded (GMT)", "Kind", "Description", "Amount", "Status", "Source"])
         for e in shown:
             table.row([
-                e["date"], clean(e["kind"]), clean(e["description"])[:80], ghs(e["amount"]),
+                e["date"], e.get("recorded", ""), clean(e["kind"]), clean(e["description"])[:70], ghs(e["amount"]),
                 STATUS_LABELS.get(e["status"], e["status"]), SOURCE_LABELS.get(e["source"], e["source"]),
             ])
     if len(entries) > MAX_ROWS:

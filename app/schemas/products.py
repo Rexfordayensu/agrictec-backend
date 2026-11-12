@@ -25,6 +25,10 @@ Metric = Literal[
     "ghana_card_verified", "phone_verified", "location_verified", "profile_complete",
     "cooperative_member", "farm_size_acres", "farm_region", "primary_crop", "farm_type",
     "months_of_records", "record_count", "income_12m", "net_12m",
+    # Transaction-based financial rules (app/domain/loan_assessment.py), over the product's
+    # assessment period.
+    "history_months", "period_income", "period_net", "avg_monthly_net", "verified_share",
+    "income_months_share", "debt_burden", "dscr",
 ]
 ProductStatus = Literal["draft", "published", "unpublished"]
 
@@ -53,6 +57,9 @@ class ProductTerms(CamelModel):
     ) = None
     collateral: Note = None
     guarantor: Note = None
+    # How many months of history the lender assesses (None: not stated; AgriCtec then shows
+    # 12 months, labelled as its own default).
+    assessment_months: Annotated[int | None, Field(ge=1, le=36)] = None
     # None: the lender didn't say. A list: only these regions.
     supported_regions: Annotated[list[Region], Field(max_length=16)] | None = None
 
@@ -90,6 +97,11 @@ class Requirement(CamelModel):
     verification: Verification = "self_declared"
     # Where this requirement is stated, when not the product's main source.
     source: Note = None
+    # When the lender's rule applies from, when an administrator last confirmed it with the
+    # lender, and when it must be confirmed again (after that it is not applied).
+    effective_from: date | None = None
+    reviewed_on: date | None = None
+    review_by: date | None = None
 
 
 class ProductContent(CamelModel):

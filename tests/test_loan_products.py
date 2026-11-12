@@ -32,7 +32,9 @@ REQUIREMENTS = [
      "fieldType": "document", "allowedFormats": ["pdf", "jpg"], "maxSizeMb": 5,
      "visibleIf": {"key": "has_guarantor", "equals": "yes"}, "verification": "lender_verifies"},
     {"key": "records", "name": "Six months of records", "category": "financial", "required": True,
-     "fieldType": "none", "check": {"metric": "months_of_records", "op": "gte", "value": 6}},
+     "fieldType": "none", "check": {"metric": "months_of_records", "op": "gte", "value": 6},
+     # A financial rule records when it took effect and was last confirmed with the lender.
+     "effectiveFrom": "2026-01-01", "reviewedOn": date.today().isoformat()},
 ]
 
 

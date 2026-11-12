@@ -884,6 +884,34 @@ class IdentityVerification(Base):
     )
 
 
+class LoanEligibilityAssessment(Base):
+    """One preliminary eligibility check of a farmer against a published loan product version:
+    the request, the outcome and the full explained result as it was shown (kept so a later
+    application can carry the assessment it was based on). Never a loan decision."""
+
+    __tablename__ = "loan_eligibility_assessments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(120), ForeignKey("loan_products.id", ondelete="CASCADE"), nullable=False)
+    product_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    lender_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    months: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('meets_preliminary', 'additional_information', 'does_not_meet', 'unable_to_assess')",
+            name="ck_loan_assessment_outcome",
+        ),
+        CheckConstraint("amount > 0 AND months > 0", name="ck_loan_assessment_request"),
+        Index("ix_loan_assessments_user", "user_id", "created_at"),
+    )
+
+
 class RiskFlag(Base):
     __tablename__ = "risk_flags"
 
@@ -955,6 +983,7 @@ __all__ = [
     "FarmRecord",
     "FinancialReportExport",
     "IdentityVerification",
+    "LoanEligibilityAssessment",
     "ImpersonationToken",
     "Lender",
     "LoanApplication",
