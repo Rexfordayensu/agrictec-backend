@@ -184,6 +184,11 @@ class LenderDetails(CamelModel):
     licence_ref: Annotated[str | None, Field(max_length=120)] = None
     regulator: Annotated[str | None, Field(max_length=120)] = None
     partnership_status: PartnershipStatus = "none"
+    # Where the lender agreed to receive AgriCtec applications, and when it agreed. Without
+    # both, AgriCtec prepares applications but does not send them.
+    submission_email: Email | None = None
+    submission_agreed_on: date | None = None
+    submission_note: Annotated[str | None, Field(max_length=500)] = None
 
     @model_validator(mode="after")
     def tidy(self) -> "LenderDetails":
@@ -192,6 +197,12 @@ class LenderDetails(CamelModel):
             if isinstance(value, str):
                 setattr(self, key, value.strip() or None)
         self.supported_regions = sorted(set(self.supported_regions))
+        if isinstance(self.submission_note, str):
+            self.submission_note = self.submission_note.strip() or None
+        if self.submission_email and self.submission_agreed_on is None:
+            raise ValueError("Enter the date the lender agreed to receive applications at this address.")
+        if self.submission_agreed_on is not None and self.submission_agreed_on > date.today():
+            raise ValueError("The date the lender agreed can't be in the future.")
         return self
 
 
@@ -217,6 +228,9 @@ class LenderPatch(CamelModel):
     licence_ref: str | None = None
     regulator: str | None = None
     partnership_status: PartnershipStatus | None = None
+    submission_email: Email | None = None
+    submission_agreed_on: date | None = None
+    submission_note: str | None = None
 
 
 class LenderVerification(CamelModel):
@@ -280,6 +294,10 @@ class Lender(CamelModel):
 
 class AdminLender(Lender):
     """Everything an administrator manages, and why farmers can or can't see the lender."""
+
+    submission_email: str | None = None
+    submission_agreed_on: date | None = None
+    submission_note: str | None = None
 
     publication_status: PublicationStatus
     listing_authorised: bool

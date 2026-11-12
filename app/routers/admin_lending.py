@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, require
-from app.core.errors import NotFound
+from app.core.errors import AppError, NotFound
 from app.db import get_db
 from app.routers.common import file_response
 from app.schemas import admin as a
@@ -76,9 +76,11 @@ def review(app_id: str, ctx: allowed("loans.view"), db: Database):
 
 @router.post("/loan-applications/{app_id}/status", response_model=LoanOut, tags=["Admin loans"])
 def update_status(app_id: str, body: a.StatusChange, ctx: allowed("loans.manage"), db: Database):
-    """Allowed moves: submitted -> under_review | rejected; under_review -> approved | rejected;
-    approved -> disbursed | rejected; disbursed -> repaid | defaulted."""
-    return lending.update_status(db, ctx.admin, app_id, body)
+    """Earlier applications are read-only history. AgriCtec never decides a loan: new applications
+    are reviewed and sent to the lender through /admin/applications, and only the lender's
+    confirmed progress is recorded."""
+    raise AppError("Earlier applications are read-only history. Use the new applications review.",
+                   code="legacy_read_only", status_code=410)
 
 
 # ---------- Lenders ----------

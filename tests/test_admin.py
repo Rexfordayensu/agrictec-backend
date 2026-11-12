@@ -117,7 +117,7 @@ def test_the_demo_world_never_invents_lenders_or_applications():
     assert boss.get(f"{API}/admin/loan-applications").json() == []
 
 
-def test_loan_pipeline_on_recorded_applications():
+def test_earlier_applications_are_read_only_history():
     boss = super_admin()
     farmer = signup()
     farmer.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
@@ -126,13 +126,11 @@ def test_loan_pipeline_on_recorded_applications():
     recorded_application(farmer_id(farmer), lender["id"], status="under_review")
     app = boss.get(f"{API}/admin/loan-applications", params={"status": "submitted"}).json()[0]
     assert app["partnerName"] == lender["name"]
-    r = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "disbursed"})
-    assert r.status_code == 400 and "can’t move" in r.json()["detail"]
-    moved = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "under_review"}).json()
-    assert moved["status"] == "under_review" and moved["history"][-1]["by"] == "Super Admin"
-    assert boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "approved"}).status_code == 400
-    approved = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "approved", "note": "Good records."})
-    assert approved.status_code == 200
+    # AgriCtec never decides a loan: the earlier pipeline's moves are refused for good.
+    for move in ({"status": "under_review"}, {"status": "approved", "note": "Good records."}, {"status": "disbursed"}):
+        r = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json=move)
+        assert r.status_code == 410 and r.json()["code"] == "legacy_read_only"
+    assert boss.get(f"{API}/admin/loan-applications/{app['id']}").json()["status"] == "submitted"
     review = boss.get(f"{API}/admin/loan-applications/{app['id']}/review").json()
     assert review["farmerExists"] and {c["key"] for c in review["checks"]} == {"ghana-card", "records"}
 
@@ -205,7 +203,7 @@ def test_deleting_a_farmer_keeps_their_loan_history(db):
     review = boss.get(f"{API}/admin/loan-applications/{app['id']}/review").json()
     assert review["farmerExists"] is False
     r = boss.post(f"{API}/admin/loan-applications/{app['id']}/status", json={"status": "under_review"})
-    assert app["status"] != "submitted" or "can only be closed" in r.json()["detail"]
+    assert r.status_code == 410  # earlier applications are read-only history
 
 
 def test_reports_risk_and_backup_round_trip():

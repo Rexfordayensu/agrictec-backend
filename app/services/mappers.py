@@ -267,6 +267,9 @@ def admin_lender_out(row: m.Lender, *, now: datetime, applications: int = 0) -> 
         listed=not blockers,
         blockers=blockers,
         applications=applications,
+        submission_email=row.submission_email,
+        submission_agreed_on=row.submission_agreed_on,
+        submission_note=row.submission_note,
     )
 
 

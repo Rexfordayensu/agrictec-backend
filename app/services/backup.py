@@ -39,6 +39,10 @@ from app.models import (
     LoanApplication,
     LoanStatusEvent,
     LoanEligibilityAssessment,
+    FarmerLoanApplication,
+    LoanApplicationEvent,
+    LoanApplicationDocument,
+    LoanDataSharingConsent,
     MomoTransaction,
     Notification,
     OnboardingDraft,
@@ -99,10 +103,14 @@ TABLES = [
     TransactionEvidence,
     TransactionEvidenceLink,
     TransactionVerification,
+    FarmerLoanApplication,
+    LoanApplicationEvent,
+    LoanApplicationDocument,
+    LoanDataSharingConsent,
 ]
 BY_NAME = {model.__tablename__: model for model in TABLES}
 # Never in a file: the hash of a password, and the generated ID of a history row.
-EXCLUDED_COLUMNS = {"users": {"password_hash"}, "loan_status_events": {"id"}}
+EXCLUDED_COLUMNS = {"users": {"password_hash"}, "loan_status_events": {"id"}, "loan_application_events": {"id"}}
 
 
 def _columns(model) -> list:
