@@ -625,6 +625,11 @@ class Lender(Base):
     website: Mapped[str | None] = mapped_column(String(300))
     email: Mapped[str | None] = mapped_column(String(160))
     phone: Mapped[str | None] = mapped_column(String(40))
+    # The contact the lender agreed to receive AgriCtec applications at, and when it agreed.
+    # Without it, applications are prepared but not sent by AgriCtec.
+    submission_email: Mapped[str | None] = mapped_column(String(160))
+    submission_agreed_on: Mapped[date | None] = mapped_column(Date)
+    submission_note: Mapped[str | None] = mapped_column(String(500))
     address: Mapped[str | None] = mapped_column(Text)
     region: Mapped[str | None] = mapped_column(String(40))
     # Agricultural lending, as the institution states it (None: not known yet)
@@ -912,6 +917,117 @@ class LoanEligibilityAssessment(Base):
     )
 
 
+class FarmerLoanApplication(Base):
+    """A farmer's application to one published loan product version (the earlier
+    loan_applications table is read-only history). AgriCtec reviews it before sending it to the
+    lender; the lender's progress is recorded only with the lender's own confirmation."""
+
+    __tablename__ = "farmer_loan_applications"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    reference: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    lender_id: Mapped[str] = mapped_column(ForeignKey("lenders.id", ondelete="RESTRICT"), nullable=False)
+    product_id: Mapped[str | None] = mapped_column(String(120), ForeignKey("loan_products.id", ondelete="SET NULL"))
+    product_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The product version as the farmer applied to it (terms and requirements).
+    product_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    months: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(300), nullable=False)
+    letter: Mapped[str | None] = mapped_column(Text)
+    answers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    assessment_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("loan_eligibility_assessments.id", ondelete="SET NULL")
+    )
+    assessment_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    statement_report_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("financial_report_exports.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    review_note: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    sent_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    sent_via: Mapped[str | None] = mapped_column(String(16))
+    sent_to: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = created_column()
+    updated_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'submitted', 'in_review', 'changes_requested', 'approved_for_sending', "
+            "'sent_to_lender', 'received_by_lender', 'under_lender_review', 'documents_requested', "
+            "'approved_by_lender', 'rejected_by_lender', 'withdrawn')",
+            name="ck_farmer_application_status",
+        ),
+        CheckConstraint("amount > 0 AND months > 0", name="ck_farmer_application_request"),
+        CheckConstraint("sent_via IS NULL OR sent_via IN ('email', 'recorded')", name="ck_farmer_application_sent_via"),
+        Index("ix_farmer_applications_user", "user_id", "created_at"),
+        Index("ix_farmer_applications_status", "status", "updated_at"),
+    )
+
+
+class LoanApplicationEvent(Base):
+    """One step in an application's timeline. A lender status carries the lender's proof."""
+
+    __tablename__ = "loan_application_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("farmer_loan_applications.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(1000))
+    file_key: Mapped[str | None] = mapped_column(String(512), ForeignKey("stored_files.key", ondelete="SET NULL"))
+    file_name: Mapped[str | None] = mapped_column(String(255))
+    at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("actor_type IN ('farmer', 'admin', 'system')", name="ck_application_event_actor"),
+        Index("ix_application_events_app", "application_id", "at"),
+    )
+
+
+class LoanApplicationDocument(Base):
+    __tablename__ = "loan_application_documents"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("farmer_loan_applications.id", ondelete="CASCADE"), nullable=False
+    )
+    requirement_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_key: Mapped[str] = mapped_column(String(512), ForeignKey("stored_files.key"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (Index("ix_application_documents_app", "application_id"),)
+
+
+class LoanDataSharingConsent(Base):
+    """What a farmer agreed to share with one lender, for which purpose, and when."""
+
+    __tablename__ = "loan_data_sharing_consents"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("farmer_loan_applications.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    lender_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(300), nullable=False)
+    data_items: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    notice_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    given_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(Timestamp)
+
+    __table_args__ = (Index("ix_sharing_consents_app", "application_id"),)
+
+
 class RiskFlag(Base):
     __tablename__ = "risk_flags"
 
@@ -984,6 +1100,10 @@ __all__ = [
     "FinancialReportExport",
     "IdentityVerification",
     "LoanEligibilityAssessment",
+    "FarmerLoanApplication",
+    "LoanApplicationEvent",
+    "LoanApplicationDocument",
+    "LoanDataSharingConsent",
     "ImpersonationToken",
     "Lender",
     "LoanApplication",
