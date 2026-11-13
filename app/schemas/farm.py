@@ -345,11 +345,17 @@ class NotificationSettings(CamelModel):
     ai_insights: bool = True
     weather_alerts: bool = True
     price_alerts: bool = True
+    # Channel: also send alerts by SMS to the farmer's phone (only when SMS is set up). The
+    # in-app inbox (the bell) always gets every alert.
+    sms_alerts: bool = True
 
 
 class AppSettings(CamelModel):
     language: Language = "en"
     notifications: NotificationSettings = NotificationSettings()
+    # Read-only: whether this AgriCtec can send SMS at all (an SMS gateway is configured).
+    # Ignored when saving.
+    sms_available: bool = False
 
 
 # ---------- Credit, loans and verifications ----------

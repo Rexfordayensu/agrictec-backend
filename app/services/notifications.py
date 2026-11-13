@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.domain.clock import now_utc
 from app.integrations import messaging
-from app.models import Notification, Profile, User
+from app.models import Notification, Profile, User, UserSettings
 
 log = logging.getLogger("agrictec.notifications")
 APP_NAME = "AgriCtec"
@@ -42,7 +42,7 @@ def _send(ids: list[str]) -> None:
             user = db.get(User, row.user_id)
             profile = db.get(Profile, row.user_id)
             text = f"{APP_NAME}: {row.title}. {row.body}"
-            if settings.sms_enabled:
+            if settings.sms_enabled and _wants_sms(db, row.user_id):
                 row.sms_status = _attempt(lambda: messaging.send_sms(profile.phone if profile else "", text))
             if settings.email_enabled and user:
                 address = (profile.email if profile and profile.email else "") or user.email
@@ -51,6 +51,12 @@ def _send(ids: list[str]) -> None:
                     lambda: messaging.send_email(address, f"{APP_NAME}: {row.title}", f"{row.body}\n\n{link}\n")
                 )
         db.commit()
+
+
+def _wants_sms(db: DB, user_id: str) -> bool:
+    """The farmer's SMS choice in Preferences (on unless they turned it off)."""
+    prefs = db.get(UserSettings, user_id)
+    return bool((prefs.notifications or {}).get("sms_alerts", True)) if prefs else True
 
 
 def _attempt(send) -> str:

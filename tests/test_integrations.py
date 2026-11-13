@@ -16,6 +16,7 @@ from app.core.events import EventBus
 from app.domain.assistant import _weather_values
 from app.integrations import identity, market_prices, messaging, paystack, weather
 from app.services import notifications
+from app.db import SessionLocal
 from tests.conftest import API, ONBOARDING, new_client, signup, super_admin
 
 # A real Open-Meteo answer for Kumasi (trimmed to two hours and two days).
@@ -492,6 +493,30 @@ def test_admin_decisions_reach_the_farmers_inbox_and_sms(settings, monkeypatch):
 
     assert farmer.post(f"{API}/me/notifications/read").status_code == 204
     assert farmer.get(f"{API}/me/notifications").json()["unread"] == 0
+
+
+def test_a_farmer_can_turn_sms_alerts_off_and_sees_whether_sms_is_available(settings, monkeypatch):
+    sent = []
+    monkeypatch.setattr(messaging, "send_sms", lambda phone, text: sent.append(phone))
+    farmer = signup()
+    farmer.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
+    saved = farmer.get(f"{API}/me/settings").json()
+    assert saved["smsAvailable"] is False and saved["notifications"]["smsAlerts"] is True
+
+    monkeypatch.setattr(settings, "arkesel_api_key", "test-key")
+    assert farmer.get(f"{API}/me/settings").json()["smsAvailable"] is True
+    off = {**saved, "notifications": {**saved["notifications"], "smsAlerts": False}, "smsAvailable": False}
+    put = farmer.put(f"{API}/me/settings", json=off).json()
+    assert put["notifications"]["smsAlerts"] is False and put["smsAvailable"] is True
+
+    me = farmer.get(f"{API}/me/profile").json()["userId"]
+    with SessionLocal() as db:
+        row = notifications.create(db, me, "weather", "Heavy rain tomorrow", "Cover your seedlings.")
+        db.commit()
+        notice = row.id
+    notifications._send([notice])
+    assert sent == []  # still in the inbox (the bell), but no SMS
+    assert farmer.get(f"{API}/me/notifications").json()["items"][0]["title"] == "Heavy rain tomorrow"
 
 
 def test_sms_numbers_and_gateway_errors():
