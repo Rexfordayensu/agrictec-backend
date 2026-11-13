@@ -335,6 +335,22 @@ def get_subscription(ctx: Reader, db: Database):
     return subscriptions.snapshot(db, ctx.user.id)
 
 
+@router.get("/subscription/payments")
+def subscription_payments(ctx: Reader, db: Database):
+    """The farmer's billing history, newest first (Paystack payments and any simulated one)."""
+    from app.services import billing
+
+    return billing.history(db, ctx.user.id)
+
+
+@router.get("/subscription/payments/{reference}/receipt")
+def subscription_receipt(reference: str, ctx: Reader, db: Database):
+    """A PDF receipt for one of the farmer's own payments."""
+    from app.services import billing
+
+    return attachment(billing.receipt(db, ctx.user.id, reference))
+
+
 @router.post("/subscription", response_model=f.SubscriptionSnapshot)
 def activate_plan(body: f.ActivatePlan, ctx: Writer, db: Database):
     """DEMO payments: the plan is activated with a simulated receipt."""
