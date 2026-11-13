@@ -321,11 +321,23 @@ def clear_chat(db: DB, user_id: str) -> None:
     db.commit()
 
 
+def _sms_available() -> bool:
+    """Whether an SMS gateway is configured, so farmers can choose SMS alerts at all."""
+    from app.config import get_settings
+
+    return get_settings().sms_enabled
+
+
 def get_settings_for(db: DB, user_id: str) -> f.AppSettings:
+    sms = _sms_available()
     row = db.get(UserSettings, user_id)
     if row is None:
-        return f.AppSettings()
-    return f.AppSettings(language=row.language, notifications=f.NotificationSettings(**(row.notifications or {})))
+        return f.AppSettings(sms_available=sms)
+    return f.AppSettings(
+        language=row.language,
+        notifications=f.NotificationSettings(**(row.notifications or {})),
+        sms_available=sms,
+    )
 
 
 def save_settings(db: DB, user_id: str, data: f.AppSettings, commit: bool = True) -> f.AppSettings:
@@ -335,7 +347,7 @@ def save_settings(db: DB, user_id: str, data: f.AppSettings, commit: bool = True
     db.merge(row)
     if commit:
         db.commit()
-    return data
+    return data.model_copy(update={"sms_available": _sms_available()})
 
 
 # ---------- Onboarding drafts ----------
