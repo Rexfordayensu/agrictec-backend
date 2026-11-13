@@ -241,6 +241,55 @@ def search_places(q: Annotated[str, Query(min_length=2, max_length=120)]):
     return places
 
 
+
+_NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
+_reverse_cache: dict[tuple[float, float], dict] = {}
+
+
+def _reverse_lookup(lat: float, lng: float) -> dict:
+    """One Nominatim reverse call (shared lock: at most one upstream call a second)."""
+    with _lock:
+        wait = 1.0 - (time.monotonic() - _last_call[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = httpx.get(
+                _NOMINATIM_REVERSE,
+                params={"lat": lat, "lon": lng, "format": "jsonv2", "zoom": 16, "addressdetails": 1,
+                        "accept-language": "en"},
+                headers={"User-Agent": "AgriCtec/1.0 (farm records platform)", "Accept": "application/json"},
+                timeout=8,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            raise AppError("Your town could not be found right now.", status_code=502) from error
+        finally:
+            _last_call[0] = time.monotonic()
+    return data if isinstance(data, dict) else {}
+
+
+@router.get("/geocoding/reverse", dependencies=[Depends(rate_limit("geocoding-reverse", 20, 60))])
+def reverse_place(
+    lat: Annotated[float, Query(ge=-90, le=90)],
+    lng: Annotated[float, Query(ge=-180, le=180)],
+):
+    """The town or city and Ghana's region for a position, e.g. {"town": "Ejisu", "region":
+    "Ashanti", "label": "Ejisu, Ashanti, Ghana"}. Positions are rounded to about 100 m before the
+    lookup (and the cache), so an exact location is never sent on or kept."""
+    from app.domain import places
+
+    key = (round(lat, 3), round(lng, 3))
+    if key not in _reverse_cache:
+        data = _reverse_lookup(*key)
+        place = places.describe(data.get("address"))
+        place["label"] = places.label(place)
+        if len(_reverse_cache) > 2000:
+            _reverse_cache.clear()
+        _reverse_cache[key] = place
+    return _reverse_cache[key]
+
+
 # ---------- Live updates ----------
 
 
