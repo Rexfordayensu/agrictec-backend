@@ -1,7 +1,6 @@
 """A receipt proves one payment; the review warns when a receipt or MoMo ID shows up on another
 farmer's account."""
 
-import json
 from datetime import date
 
 from tests.conftest import API, add_momo, add_record, receipt_png, signup, super_admin
