@@ -38,22 +38,11 @@ def test_bearer_token_works_without_cookies():
     assert bare.get(f"{API}/auth/session", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
 
-def test_guest_is_created_once_per_device():
-    c = new_client()
-    first = c.post(f"{API}/auth/guest").json()["session"]["userId"]
-    c.post(f"{API}/auth/logout")
-    second = c.post(f"{API}/auth/guest").json()["session"]["userId"]
-    assert first == second
-    other_device = new_client().post(f"{API}/auth/guest").json()["session"]["userId"]
-    assert other_device != first
-
-
-def test_signup_and_guest_follow_the_flags():
+def test_signup_follows_the_flag():
     boss = super_admin()
     flags = new_client().get(f"{API}/platform/flags").json()
     assert boss.put(f"{API}/admin/settings/flags", json={**flags, "signupOpen": False, "guestMode": False}).status_code == 200
     assert new_client().post(f"{API}/auth/signup", json={"email": "x@example.com", "password": "password123"}).status_code == 403
-    assert new_client().post(f"{API}/auth/guest").status_code == 403
 
 
 def test_a_farmer_session_never_opens_the_console():

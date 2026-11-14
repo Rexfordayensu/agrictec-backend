@@ -1,4 +1,5 @@
-"""Farmer sign-up, sign-in and guest access (services/auth.service.ts)."""
+"""Farmer sign-up and sign-in (services/auth.service.ts). Guests have no account: the demo
+runs in the web app only and nothing of it is stored here."""
 
 import re
 from datetime import timedelta
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
 from app.core.errors import SUSPENDED_MESSAGE, AppError, Conflict, Forbidden, Unauthorized
-from app.core.security import hash_password, sign, unsign, verify_password
+from app.core.security import hash_password, verify_password
 from app.core.sessions import create_session, end_session
 from app.domain.clock import now_utc
 from app.domain.passwords import farmer_password_problem
@@ -17,7 +18,6 @@ from app.models import AuthSession, User
 from app.schemas.farm import Session
 from app.services import login_lockout, platform_store
 
-GUEST_EMAIL = "guest@agrictec.demo"
 EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 BAD_CREDENTIALS = "Incorrect email or password"
 
@@ -113,21 +113,6 @@ def replace_temporary_password(
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
     return _start(db, user)
-
-
-def continue_as_guest(db: DB, device_cookie: str | None) -> tuple[str, Session, str]:
-    """One guest per device: the guest's ID lives in a signed, long-lived cookie, so its demo data
-    never vanishes between visits. Returns the session token, the session and the device cookie."""
-    if not platform_store.flags(db).guest_mode:
-        raise Forbidden("Guest mode is turned off right now.", code="guest_mode_off")
-    guest_id = unsign(device_cookie)
-    guest = db.get(User, guest_id) if guest_id else None
-    if guest is None or not guest.is_guest:
-        guest = User(email=GUEST_EMAIL, password_hash=None, is_guest=True, created_at=now_utc())
-        db.add(guest)
-        db.flush()
-    token, session = _start(db, guest)
-    return token, session, sign(guest.id)
 
 
 def sign_out(db: DB, record: AuthSession) -> None:

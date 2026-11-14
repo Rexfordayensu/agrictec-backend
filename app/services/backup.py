@@ -306,6 +306,17 @@ def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password
     passwords = dict(db.execute(select(User.id, User.password_hash)).all())
     for user in parsed.get("users", []):
         user["password_hash"] = passwords.get(user["id"])
+    # Guest data is never stored. An older backup can still hold guest accounts: the two tables
+    # without a link to the account skip their rows here, and the accounts themselves (with
+    # everything linked to them) are deleted once the rows are in.
+    guests = {u["id"] for u in parsed.get("users", []) if u.get("is_guest")}
+    if guests:
+        for table in ("transaction_verifications", "loan_applications"):
+            parsed[table] = [r for r in parsed.get(table, []) if r.get("user_id") not in guests]
+        kept = {r["id"] for r in parsed.get("loan_applications", [])}
+        parsed["loan_status_events"] = [
+            r for r in parsed.get("loan_status_events", []) if r.get("application_id") in kept
+        ]
     try:
         for model in reversed(TABLES):
             if model is not TransactionVerification:
@@ -318,6 +329,7 @@ def import_all(db: DB, actor: Admin, document: dict, confirmation: str, password
                     db.execute(pg_insert(model).values(rows).on_conflict_do_nothing(index_elements=["id"]))
                 else:
                     db.execute(insert(model), rows)
+        db.execute(delete(User).where(User.is_guest.is_(True)))
         db.flush()
     except Exception as error:
         db.rollback()
