@@ -283,6 +283,8 @@ class UserSettings(Base):
     )
     language: Mapped[str] = mapped_column(String(4), default="en", nullable=False)
     notifications: Mapped[dict[str, bool]] = mapped_column(JSONB, default=dict, nullable=False)
+    # When the farmer finished or skipped the app tour (null: not yet, so it shows once).
+    tour_seen_at: Mapped[datetime | None] = mapped_column(Timestamp)
 
 
 class OnboardingDraft(Base):

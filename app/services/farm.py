@@ -447,7 +447,21 @@ def get_settings_for(db: DB, user_id: str) -> f.AppSettings:
         language=row.language,
         notifications=f.NotificationSettings(**(row.notifications or {})),
         sms_available=sms,
+        tour_seen_at=row.tour_seen_at,
     )
+
+
+def mark_tour_seen(db: DB, user_id: str) -> f.AppSettings:
+    """The farmer finished or skipped the app tour: it doesn't open by itself again (any phone).
+    The first time is kept; doing it again changes nothing."""
+    row = db.get(UserSettings, user_id)
+    if row is None:
+        row = UserSettings(user_id=user_id, language="en", notifications={})
+        db.add(row)
+    if row.tour_seen_at is None:
+        row.tour_seen_at = now_utc()
+    db.commit()
+    return get_settings_for(db, user_id)
 
 
 def save_settings(db: DB, user_id: str, data: f.AppSettings, commit: bool = True) -> f.AppSettings:
@@ -457,7 +471,7 @@ def save_settings(db: DB, user_id: str, data: f.AppSettings, commit: bool = True
     db.merge(row)
     if commit:
         db.commit()
-    return data.model_copy(update={"sms_available": _sms_available()})
+    return data.model_copy(update={"sms_available": _sms_available(), "tour_seen_at": row.tour_seen_at})
 
 
 # ---------- Onboarding drafts ----------

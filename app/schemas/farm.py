@@ -370,6 +370,9 @@ class AppSettings(CamelModel):
     # Read-only: whether this AgriCtec can send SMS at all (an SMS gateway is configured).
     # Ignored when saving.
     sms_available: bool = False
+    # Read-only: when the farmer finished or skipped the app tour (POST /me/tour sets it).
+    # Ignored when saving, so saving settings never brings the tour back.
+    tour_seen_at: Timestamp | None = None
 
 
 # ---------- Credit, loans and verifications ----------
