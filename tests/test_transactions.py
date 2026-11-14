@@ -355,11 +355,14 @@ def test_decimal_finance_and_existing_credit_score_results():
     assert total_income(records) == Decimal("0.30")
     assert total_expenses(records) == Decimal("0.10")
     before = calculate_credit_score(records, [], Profile(user_id="u"), now=now)
-    # Adding provenance/status metadata does not influence any scoring factor or the 45-day rule.
-    verified = [
-        r.model_copy(update={"verification_status": "verified", "source_type": "statement_upload"}) for r in records
-    ]
-    assert calculate_credit_score(verified, [], Profile(user_id="u"), now=now) == before
+    # Where an entry came from doesn't change the score; AgriCtec verifying it does (in full,
+    # against the unchecked 50%), and the 45-day rule still applies the same way.
+    from_statement = [r.model_copy(update={"source_type": "statement_upload"}) for r in records]
+    assert calculate_credit_score(from_statement, [], Profile(user_id="u"), now=now) == before
+    verified = [r.model_copy(update={"verification_status": "verified"}) for r in records]
+    after = calculate_credit_score(verified, [], Profile(user_id="u"), now=now)
+    assert after.record_completeness > before.record_completeness
+    assert after.payment_history > before.payment_history
     financing = records[0].model_copy(update={"type": "financing", "direction": "in", "amount": 9999})
     assert total_income([*records, financing]) == Decimal("0.30")
     assert total_expenses([*records, financing]) == Decimal("0.10")

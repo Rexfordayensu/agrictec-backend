@@ -26,6 +26,9 @@ class CreditTargets(CamelModel):
     records_for_full: Annotated[int, Field(ge=1, le=1000)]
     momo_for_full: Annotated[int, Field(ge=1, le=1000)]
     months_window: Annotated[int, Field(ge=1, le=24)]
+    # How much (in %) an entry nobody has checked yet counts towards the score, against 100% for
+    # one AgriCtec verified from its receipt. Rules saved before this setting existed get 50.
+    unverified_weight: Annotated[int, Field(ge=0, le=100)] = 50
 
 
 class CreditBands(CamelModel):

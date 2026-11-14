@@ -22,7 +22,7 @@ DEFAULT_CREDIT_CONFIG: dict = {
         "momoActivity": 10,
         "verification": 10,
     },
-    "targets": {"recordsForFull": 30, "momoForFull": 20, "monthsWindow": 6},
+    "targets": {"recordsForFull": 30, "momoForFull": 20, "monthsWindow": 6, "unverifiedWeight": 50},
     "bands": {"fair": 500, "good": 650, "excellent": 750},
     "eligibility": {"minRecords": 5},
     "updatedAt": BUILT_IN,
