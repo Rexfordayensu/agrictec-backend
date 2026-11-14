@@ -5,7 +5,7 @@ import zlib
 
 from app.domain.clock import today
 from app.services import farm
-from tests.conftest import API, signup
+from tests.conftest import API, signup, add_momo, add_record
 
 
 def pdf_text(data):
@@ -19,7 +19,7 @@ def pdf_text(data):
 
 
 def add(client, **overrides):
-    response = client.post(f"{API}/me/momo", json={
+    response = add_momo(client, {
         "direction": "in", "counterparty": "Local buyer", "amount": "10.10", "network": "MTN",
         "date": today().isoformat(), **overrides,
     })
@@ -32,7 +32,7 @@ def test_statement_is_momo_only_private_exact_and_filtered():
     add(owner, counterparty="OwnBuyer", amount="0.10", reference="OWN-1")
     add(owner, counterparty="OwnSupplier", direction="out", amount="0.20", network="Telecel", reference="OWN-2")
     add(other, counterparty="PrivateOtherFarmer", amount="999.99")
-    owner.post(f"{API}/me/records", json={"type": "income", "description": "FarmOnlyNotMoMo", "amount": 5000,
+    add_record(owner, {"type": "income", "description": "FarmOnlyNotMoMo", "amount": 5000,
                                          "crop": "Maize", "date": today().isoformat()})
     response = owner.get(f"{API}/me/momo/statement")
     assert response.status_code == 200, response.text
@@ -64,5 +64,8 @@ def test_momo_writes_notify_only_the_owning_account(monkeypatch):
     assert owner.patch(f"{API}/me/momo/{row['id']}", json={"amount": "15.15"}).status_code == 200
     assert owner.get(f"{API}/me/momo/summary").json()["allTime"]["in"] == "15.15"
     assert owner.delete(f"{API}/me/momo/{row['id']}").status_code == 204
-    assert updates == [("account", user_id)] * 3
+    # Account updates go only to the owner; the admin review queue is told (with no farmer data)
+    # when the entry joins it, on creation with its receipt and again after the edit.
+    assert [u for u in updates if u[0] == "account"] == [("account", user_id)] * 3
+    assert [u for u in updates if u[0] != "account"] == [("platform", None)] * 2
     assert owner.get(f"{API}/me/momo/summary").json()["allTime"]["count"] == 0

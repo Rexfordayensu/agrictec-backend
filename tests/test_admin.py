@@ -8,6 +8,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.services.backup import open_backup
 from tests.conftest import (
+    add_record,
     ADMIN_PASSWORD,
     API,
     ONBOARDING,
@@ -173,7 +174,7 @@ def test_team_rules():
 def test_view_as_farmer_is_read_only_and_audited(db):
     boss = super_admin()
     farmer = signup()
-    farmer.post(f"{API}/me/records", json={"type": "activity", "description": "Weeded", "crop": "Maize", "date": "2026-10-03"})
+    add_record(farmer, {"type": "activity", "description": "Weeded", "crop": "Maize", "date": "2026-10-03"})
     uid = farmer_id(farmer)
     start = boss.post(f"{API}/admin/farmers/{uid}/impersonate").json()
     claimed = boss.post(f"{API}/auth/impersonation/claim", json={"token": start["token"]})

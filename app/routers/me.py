@@ -72,7 +72,42 @@ def list_records(ctx: Reader, db: Database):
 
 @router.post("/records", response_model=f.FarmRecord, status_code=201)
 def create_record(body: f.RecordInput, ctx: Writer, db: Database):
+    """A cash or bank record, or an activity. A record paid by mobile money needs its receipt:
+    send it to /me/records/with-receipt."""
     return farm.create_record(db, ctx.user.id, body)
+
+
+@router.post(
+    "/records/with-receipt",
+    response_model=f.FarmRecord,
+    status_code=201,
+    dependencies=[Depends(rate_limit("record-receipt", 60, 3600))],
+)
+def create_record_with_receipt(
+    ctx: Writer,
+    db: Database,
+    data: Annotated[str | None, Form()] = None,
+    receipt: Annotated[UploadFile | None, File()] = None,
+):
+    """A record with its receipt (multipart: `data` is the record as JSON, `receipt` the photo or
+    PDF). Paid by mobile money, it goes straight to AgriCtec's review."""
+    from fastapi.exceptions import RequestValidationError
+    from pydantic import ValidationError
+
+    from app.core.errors import AppError
+    from app.services import transactions
+
+    if receipt is None or not receipt.filename:
+        raise AppError("Upload the receipt for this record.", code="receipt_required")
+    if not data:
+        raise AppError("Send the record details with the receipt.")
+    try:
+        body = f.RecordInput.model_validate_json(data)
+    except ValidationError as error:
+        raise RequestValidationError(error.errors(include_url=False)) from None
+    return farm.create_record(
+        db, ctx.user.id, body, receipt.file.read(transactions.MAX_BYTES + 1), receipt.filename
+    )
 
 
 @router.delete("/records", status_code=204)
@@ -122,9 +157,37 @@ def list_momo(ctx: Reader, db: Database):
     return farm.list_momo(db, ctx.user.id)
 
 
-@router.post("/momo", response_model=f.MomoTransaction, status_code=201)
-def create_momo(body: f.MomoInput, ctx: Writer, db: Database):
-    return farm.create_momo(db, ctx.user.id, body)
+@router.post(
+    "/momo",
+    response_model=f.MomoTransaction,
+    status_code=201,
+    dependencies=[Depends(rate_limit("momo-create", 60, 3600))],
+)
+def create_momo(
+    ctx: Writer,
+    db: Database,
+    data: Annotated[str | None, Form()] = None,
+    receipt: Annotated[UploadFile | None, File()] = None,
+):
+    """A MoMo transaction must come with its receipt (multipart: `data` is the transaction as
+    JSON, `receipt` the photo or PDF). It is saved and sent to AgriCtec's review queue."""
+    from fastapi.exceptions import RequestValidationError
+    from pydantic import ValidationError
+
+    from app.core.errors import AppError
+    from app.services import transactions
+
+    if receipt is None or not receipt.filename:
+        raise AppError("Upload the MoMo receipt for this transaction.", code="receipt_required")
+    if not data:
+        raise AppError("Send the transaction details with the receipt.")
+    try:
+        body = f.MomoInput.model_validate_json(data)
+    except ValidationError as error:
+        raise RequestValidationError(error.errors(include_url=False)) from None
+    return farm.create_momo(
+        db, ctx.user.id, body, receipt.file.read(transactions.MAX_BYTES + 1), receipt.filename
+    )
 
 
 @router.delete("/momo", status_code=204)

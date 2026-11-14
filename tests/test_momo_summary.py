@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.domain import momo_summary
 from app.domain.clock import today
-from tests.conftest import API, ONBOARDING, signup
+from tests.conftest import API, ONBOARDING, signup, add_momo
 
 TODAY = date(2026, 11, 12)
 
@@ -70,7 +70,7 @@ def test_the_endpoint_reads_only_the_farmers_own_entries():
     day = today().isoformat()
     for body in ({"direction": "in", "counterparty": "Buyer", "amount": 250.5, "network": "MTN", "date": day},
                  {"direction": "out", "counterparty": "Agro shop", "amount": 100, "network": "Telecel", "date": day}):
-        assert ama.post(f"{API}/me/momo", json=body).status_code == 201
+        assert add_momo(ama, body).status_code == 201
     kofi = signup("kofi.momo@example.com")
     kofi.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
 

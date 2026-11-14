@@ -14,7 +14,7 @@ from app.db import SessionLocal
 from app.domain import financial_summary
 from app.domain.clock import today
 from app.services.backup import open_backup
-from tests.conftest import API, ONBOARDING, admin_with_role, signup, super_admin
+from tests.conftest import API, ONBOARDING, admin_with_role, signup, super_admin, add_record
 
 TODAY = date(2026, 11, 12)
 
@@ -107,7 +107,7 @@ def onboarded(email="ama@example.com"):
 
 
 def add_sale(c, amount="1200.50", on=None):
-    r = c.post(f"{API}/me/records", json={
+    r = add_record(c, {
         "type": "income", "description": "Maize sale", "crop": "Maize", "amount": amount,
         "date": (on or today()).isoformat(), "category": "crop_sale",
     })

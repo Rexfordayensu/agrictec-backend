@@ -251,6 +251,13 @@ class RecordInput(TransactionInput):
     date: dt.date
     notes: Annotated[str | None, Field(max_length=1000)] = None
     direction: Literal["in", "out"] | None = None
+    network: MomoNetwork | None = None
+    bank_name: Annotated[str | None, Field(max_length=80)] = None
+
+    @field_validator("bank_name", mode="before")
+    @classmethod
+    def empty_bank(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
 
 
 class RecordPatch(TransactionInput):
@@ -261,6 +268,13 @@ class RecordPatch(TransactionInput):
     date: dt.date | None = None
     notes: Annotated[str | None, Field(max_length=1000)] = None
     direction: Literal["in", "out"] | None = None
+    network: MomoNetwork | None = None
+    bank_name: Annotated[str | None, Field(max_length=80)] = None
+
+    @field_validator("bank_name", mode="before")
+    @classmethod
+    def empty_bank(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
 
 
 class FarmRecord(RecordInput, TransactionMetadata):

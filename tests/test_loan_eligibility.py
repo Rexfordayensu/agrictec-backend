@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from app.domain.loan_assessment import Facts, evaluate
 from app.domain.repayment import schedule
-from tests.conftest import API, ONBOARDING, published_lender, signup, super_admin
+from tests.conftest import API, ONBOARDING, published_lender, signup, super_admin, add_record
 
 TODAY = date(2026, 11, 12)
 FACTS = Facts(identity_level="reviewed", phone_verified=True, location_verified=True, profile_complete=True,
@@ -294,7 +294,7 @@ def test_a_farmer_checks_a_product_and_the_snapshot_is_kept_privately():
     assert body["outcome"] == "additional_information"  # no records yet
     assert body["period"] == {"months": 6, "from": body["period"]["from"], "to": body["period"]["to"], "source": "lender"}
     assert body["product"]["version"] == 1 and body["repayment"]["available"]
-    ama.post(f"{API}/me/records", json={"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
+    add_record(ama, {"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
                                        "crop": "Maize", "amount": 2400, "date": date.today().isoformat()})
     second = ama.post(url, json={"amount": 6000, "months": 12}).json()
     assert second["outcome"] == "meets_preliminary" and second["figures"]["income"] == "2400.00"
@@ -319,7 +319,7 @@ def test_checks_stop_when_loans_are_switched_off():
 def test_the_statement_pdf_lists_each_entry_with_when_it_was_recorded():
     ama = signup()
     ama.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
-    ama.post(f"{API}/me/records", json={"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
+    add_record(ama, {"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
                                        "crop": "Maize", "amount": 2400, "date": date.today().isoformat()})
     report = ama.post(f"{API}/me/reports/financial", json={"months": 3}).json()
     pdf = ama.get(f"{API}/me/reports/financial/{report['id']}/file").content

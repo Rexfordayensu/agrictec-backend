@@ -115,16 +115,65 @@ def _check_date(value) -> None:
         raise AppError("The date can't be in the future.")
 
 
-def create_record(db: DB, user_id: str, data: f.RecordInput) -> f.FarmRecord:
+PAYMENT_METHODS = ("cash", "bank", "mobile_money")
+MOMO_NETWORKS = ("MTN", "Telecel", "AirtelTigo")
+
+
+def _check_payment(values: dict, *, has_receipt: bool) -> None:
+    """A money record says how it was paid: cash; bank (bank name and reference); or mobile
+    money (network and its receipt). Activities have no money, so no payment details."""
+    if values.get("type") == "activity":
+        values.update(payment_method=None, network=None, bank_name=None)
+        return
+    method = values.get("payment_method")
+    if method not in PAYMENT_METHODS:
+        raise AppError("Choose how the money was paid: cash, bank or mobile money.", code="payment_method_required")
+    if method == "bank":
+        if not values.get("bank_name"):
+            raise AppError("Enter the name of the bank.", code="bank_name_required")
+        if not (values.get("external_reference") or "").strip():
+            raise AppError("Enter the bank reference for this payment.", code="bank_reference_required")
+        values["network"] = None
+    elif method == "mobile_money":
+        if values.get("network") not in MOMO_NETWORKS:
+            raise AppError("Choose the MoMo network: MTN, Telecel or AirtelTigo.", code="network_required")
+        if not has_receipt:
+            raise AppError("Upload the MoMo receipt for this record.", code="receipt_required")
+        values["bank_name"] = None
+    else:
+        values.update(network=None, bank_name=None)
+
+
+def create_record(
+    db: DB, user_id: str, data: f.RecordInput, receipt: bytes | None = None, filename: str | None = None
+) -> f.FarmRecord:
+    """A record paid by mobile money comes with its MoMo receipt and goes straight to AgriCtec's
+    review; a cash or bank record (or an activity) is saved as the farmer's own entry."""
     _check_date(data.date)
     values = _record_fields(data.model_dump())
+    _check_payment(values, has_receipt=receipt is not None)
+    cleaned = content_type = None
+    if receipt is not None:  # checked before anything is written
+        cleaned, content_type = transactions.clean_file(receipt)
+        transactions.lock_evidence(db, user_id)
     transactions.prepare_write(db, user_id, "farm", values, confirm_duplicate=data.confirm_duplicate)
     row = FarmRecord(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
     db.flush()
     transactions.change_status(db, row, "farm", transition(None, "create"), initial=True)
+    queued = False
+    if receipt is not None:
+        transactions.link_file(db, user_id, "farm", row, receipt, filename, "receipt", cleaned, content_type)
+        transactions.change_status(
+            db, row, "farm", transition(row.verification_status, "attach"), reason="Receipt uploaded with the record."
+        )
+        if row.payment_method == "mobile_money":
+            transactions.send_momo_for_review(db, row, "Paid by mobile money; sent for review with its receipt.", "farm")
+            queued = True
     db.commit()
     bus.publish("account", user_id)
+    if queued:
+        bus.publish("platform")
     return mappers.record_out(row)
 
 
@@ -142,14 +191,36 @@ def update_record(db: DB, user_id: str, record_id: str, patch: f.RecordPatch) ->
     changes = patch.model_dump(exclude_unset=True)
     _check_date(changes.get("date"))
     changes = _record_fields(changes) if changes.get("type", row.type) == "activity" else changes
-    transactions.prepare_write(db, user_id, "farm", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    # How it was paid is checked whenever it (or the record type) changes. Older records that never
+    # said how they were paid can still be edited otherwise.
+    payment_keys = {"type", "payment_method", "network", "bank_name", "external_reference"}
+    if payment_keys & changes.keys():
+        merged = {k: getattr(row, k) for k in payment_keys} | changes
+        _check_payment(merged, has_receipt=bool(transactions.evidence_rows(db, "farm", row.id)))
+        for key in ("payment_method", "network", "bank_name"):
+            if merged.get(key) != getattr(row, key):
+                changes[key] = merged.get(key)
+    material = transactions.prepare_write(
+        db, user_id, "farm", changes, row=row, confirm_duplicate=patch.confirm_duplicate
+    )
     for key, value in changes.items():
         if value is None and key in {"amount", "type", "date", "crop", "description", "source_type"}:
             raise AppError(f"{key} cannot be empty.")
         setattr(row, key, value)
     row.updated_at = now_utc()
+    # Paid by mobile money with its receipt on file: changed details go back for a fresh review.
+    review = bool(
+        row.payment_method == "mobile_money"
+        and row.verification_status in ("self_reported", "evidence_submitted", "rejected")
+        and transactions.evidence_rows(db, "farm", row.id)
+        and (material or "payment_method" in changes)
+    )
+    if review:
+        transactions.send_momo_for_review(db, row, "Details edited; sent for a fresh review.", "farm")
     db.commit()
     bus.publish("account", user_id)
+    if review:
+        bus.publish("platform")
     return mappers.record_out(row)
 
 
@@ -199,17 +270,28 @@ def list_momo(db: DB, user_id: str) -> list[f.MomoTransaction]:
     return [mappers.momo_out(r, metadata=metadata[r.id]) for r in rows]
 
 
-def create_momo(db: DB, user_id: str, data: f.MomoInput) -> f.MomoTransaction:
+def create_momo(db: DB, user_id: str, data: f.MomoInput, receipt: bytes, filename: str | None) -> f.MomoTransaction:
+    """Every MoMo transaction is saved together with its receipt and goes straight to AgriCtec's
+    review queue: an admin checks the receipt and verifies or rejects the entry."""
     _check_date(data.date)
+    # The receipt is checked before anything is written, so a bad file saves nothing.
+    cleaned, content_type = transactions.clean_file(receipt)
     values = data.model_dump()
     values["reference"] = (values["reference"] or "").strip() or None
+    transactions.lock_evidence(db, user_id)
     transactions.prepare_write(db, user_id, "momo", values, confirm_duplicate=data.confirm_duplicate)
     row = MomoTransaction(user_id=user_id, created_at=now_utc(), **values)
     db.add(row)
     db.flush()
     transactions.change_status(db, row, "momo", transition(None, "create"), initial=True)
+    transactions.link_file(db, user_id, "momo", row, receipt, filename, "receipt", cleaned, content_type)
+    transactions.change_status(
+        db, row, "momo", transition(row.verification_status, "attach"), reason="MoMo receipt uploaded with the entry."
+    )
+    transactions.send_momo_for_review(db, row, "Sent for review with its receipt.")
     db.commit()
     bus.publish("account", user_id)
+    bus.publish("platform")
     return mappers.momo_out(row)
 
 
@@ -220,14 +302,22 @@ def update_momo(db: DB, user_id: str, momo_id: str, patch: f.MomoPatch) -> f.Mom
     for key, value in changes.items():
         if value is None and key in {"amount", "direction", "date", "counterparty", "source_type"}:
             raise AppError(f"{key} cannot be empty.")
-    transactions.prepare_write(db, user_id, "momo", changes, row=row, confirm_duplicate=patch.confirm_duplicate)
+    material = transactions.prepare_write(
+        db, user_id, "momo", changes, row=row, confirm_duplicate=patch.confirm_duplicate
+    )
     if "reference" in changes and changes["reference"] != row.reference:
         row.reference_duplicate = False
     for key, value in changes.items():
         setattr(row, key, value)
     row.updated_at = now_utc()
+    # Changed details with a receipt on file: back to the review queue for a fresh check.
+    review = bool(material and transactions.evidence_rows(db, "momo", row.id))
+    if review:
+        transactions.send_momo_for_review(db, row, "Details edited; sent for a fresh review.")
     db.commit()
     bus.publish("account", user_id)
+    if review:
+        bus.publish("platform")
     return mappers.momo_out(row)
 
 

@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.integrations import messaging
 from app.models import AuditEntry, LoanDataSharingConsent, Notification
-from tests.conftest import API, ONBOARDING, admin_with_role, new_client, published_lender, signup, super_admin
+from tests.conftest import API, ONBOARDING, admin_with_role, new_client, published_lender, signup, super_admin, add_record
 
 PDF = b"%PDF-1.4\n% test document\n"
 DATES = {"effectiveFrom": "2026-01-01", "reviewedOn": date.today().isoformat()}
@@ -56,7 +56,7 @@ def ready_farmer(boss, email="ama@example.com", card=True):
     if card:
         request = boss.get(f"{API}/admin/verifications", params={"status": "pending", "kind": "ghanaCard"}).json()[0]
         assert boss.post(f"{API}/admin/verifications/{request['id']}/approve").status_code == 200
-    farmer.post(f"{API}/me/records", json={"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
+    add_record(farmer, {"type": "income", "category": "crop_sale", "description": "Maize sale (test)",
                                           "crop": "Maize", "amount": 2400, "date": date.today().isoformat()})
     return farmer
 
@@ -206,7 +206,7 @@ def test_review_tally_changes_send_and_lender_progress_with_proof():
     doc_id = detail["requirements"][4]["documents"][0]["id"]
     assert boss.get(f"{admin}/documents/{doc_id}/file").content == PDF
     # The farmer's records changed after submitting: the tally says so.
-    farmer.post(f"{API}/me/records", json={"type": "expense", "category": "seed", "description": "Seed (test)",
+    add_record(farmer, {"type": "expense", "category": "seed", "description": "Seed (test)",
                                           "crop": "Maize", "amount": 300, "date": date.today().isoformat()})
     assert boss.get(admin).json()["tally"]["allMatch"] is False
 

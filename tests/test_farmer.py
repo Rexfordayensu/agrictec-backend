@@ -1,6 +1,6 @@
 """The farmer's own data, onboarding, verifications, loans and AI tools."""
 
-from tests.conftest import API, ONBOARDING, new_client, published_lender, signup, super_admin
+from tests.conftest import API, ONBOARDING, new_client, published_lender, signup, super_admin, add_momo, add_record
 
 RECORD = {"type": "income", "description": "Maize sales", "crop": "Maize", "amount": 1200, "date": "2026-10-01"}
 
@@ -8,9 +8,9 @@ RECORD = {"type": "income", "description": "Maize sales", "crop": "Maize", "amou
 def test_records_are_private_to_their_farmer():
     ama = signup("ama@example.com")
     kofi = signup("kofi@example.com")
-    created = ama.post(f"{API}/me/records", json=RECORD).json()
+    created = add_record(ama, RECORD).json()
     # An entry describes something that happened: never a future date.
-    assert ama.post(f"{API}/me/records", json={**RECORD, "date": "2999-01-01"}).status_code == 400
+    assert add_record(ama, {**RECORD, "date": "2999-01-01"}).status_code == 400
     assert [r["id"] for r in ama.get(f"{API}/me/records").json()] == [created["id"]]
     assert kofi.get(f"{API}/me/records").json() == []
     assert kofi.patch(f"{API}/me/records/{created['id']}", json={"amount": 1}).status_code == 404
@@ -24,7 +24,7 @@ def test_records_are_private_to_their_farmer():
 
 def test_missing_momo_reference_stays_unknown_and_the_browser_cannot_write_ai_history():
     c = signup()
-    t = c.post(f"{API}/me/momo", json={"direction": "in", "counterparty": "Buyer", "amount": 50, "date": "2026-10-02"}).json()
+    t = add_momo(c, {"direction": "in", "counterparty": "Buyer", "amount": 50, "date": "2026-10-02"}).json()
     assert t["reference"] is None
     # Diagnoses and the assistant conversation are written by the API only.
     fake = {"disease": "Healthy", "severity": "None", "confidence": 90, "treatment": "None needed",
@@ -34,7 +34,7 @@ def test_missing_momo_reference_stays_unknown_and_the_browser_cannot_write_ai_hi
     assert c.put(f"{API}/me/chat", json=chat).status_code == 405
     # Records are added one by one: the bulk route only clears them.
     assert c.put(f"{API}/me/records", json=[RECORD] * 50).status_code == 405
-    c.post(f"{API}/me/records", json=RECORD)
+    add_record(c, RECORD)
     assert c.delete(f"{API}/me/records").status_code == 204
     assert c.get(f"{API}/me/records").json() == []
 
@@ -160,7 +160,7 @@ def test_ai_tools_follow_the_plan_and_spend_credits():
 def test_export_import_and_delete_my_data():
     c = signup()
     c.post(f"{API}/me/onboarding/complete", json=ONBOARDING)
-    c.post(f"{API}/me/records", json=RECORD)
+    add_record(c, RECORD)
     exported = c.get(f"{API}/me/export").json()
     assert len(exported["records"]) == 1
 

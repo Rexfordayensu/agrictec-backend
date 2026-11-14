@@ -99,6 +99,8 @@ def record_out(row: m.FarmRecord, *, include_history: bool = True, metadata: dic
         date=row.date,
         notes=row.notes,
         direction=row.direction,
+        network=row.network,
+        bank_name=row.bank_name,
         **(metadata if metadata is not None else transaction_metadata(row, "farm", include_history)),
         created_at=row.created_at,
     )

@@ -48,8 +48,10 @@ def test_transaction_lists_use_constant_queries_and_keep_metadata(db, kind):
     assert len(queries) == 3, queries  # entries, histories, grouped evidence counts
     attached = next(row for row in listed if row.id == first_id)
     assert attached.evidence_count == 1
-    assert attached.verification_status == "evidence_submitted"
-    assert [h.to_status for h in attached.history] == ["self_reported", "evidence_submitted"]
+    # A MoMo receipt sends the entry straight to review; a farm record waits for "Request review".
+    assert attached.verification_status == ("evidence_submitted" if kind == "farm" else "verification_pending")
+    expected = ["self_reported", "evidence_submitted"] + ([] if kind == "farm" else ["verification_pending"])
+    assert [h.to_status for h in attached.history] == expected
     assert all(row.evidence_count == 0 and len(row.history) == 1 for row in listed if row.id != first_id)
 
 

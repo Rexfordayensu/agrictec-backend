@@ -75,6 +75,38 @@ def client():
     return new_client()
 
 
+def receipt_png(seed: int = 0) -> bytes:
+    """A tiny, real PNG (different per seed, so each is a separate file)."""
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (seed % 256, 120, 60)).save(out, format="PNG")
+    return out.getvalue()
+
+
+_receipts = iter(range(1, 10_000))
+
+
+def add_momo(client: TestClient, body: dict, receipt: bytes | None = None):
+    """POST /me/momo the way the app does: the details as JSON plus the MoMo receipt."""
+    import json
+
+    return client.post(
+        f"{API}/me/momo",
+        data={"data": json.dumps(body, default=str)},
+        files={"receipt": ("receipt.png", receipt or receipt_png(next(_receipts)), "image/png")},
+    )
+
+
+def add_record(client: TestClient, body: dict):
+    """POST /me/records; a money record without a payment method is recorded as paid in cash."""
+    if body.get("type") != "activity" and "paymentMethod" not in body:
+        body = {**body, "paymentMethod": "cash"}
+    return client.post(f"{API}/me/records", json=body)
+
+
 def signup(email: str = "ama@example.com", password: str = "password123") -> TestClient:
     c = new_client()
     r = c.post(f"{API}/auth/signup", json={"email": email, "password": password})
