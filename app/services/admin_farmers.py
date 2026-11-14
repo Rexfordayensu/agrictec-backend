@@ -25,6 +25,7 @@ from app.models import (
     LoanApplication,
     MomoTransaction,
     User,
+    VerificationRequest,
 )
 from app.schemas import admin as a
 from app.services import notifications, platform_store, transactions
@@ -333,7 +334,7 @@ def end_impersonation(db: DB, admin: Admin, user_id: str) -> None:
 # ---------- The console's farmers list, one page at a time ----------
 
 PAGE_SIZE_MAX = 100
-VERIFICATIONS = ("full", "no-card", "no-phone")
+VERIFICATIONS = ("full", "no-card", "no-phone", "pending-review")
 _STATUS_ORDER = {"active": 0, "pending_verification": 1, "suspended": 2}
 
 
@@ -347,6 +348,22 @@ def _phone_forms(phone: str) -> str:
         return ""
     intl = normalize_phone(phone)
     return f"{intl} {intl.replace('+233', '0', 1)}"
+
+
+def pending_checks(db: DB) -> dict[str, list[str]]:
+    """Which checks (phone, location, ghanaCard) each farmer has waiting for an admin's review,
+    from the verification requests themselves (not the account status)."""
+    waiting: dict[str, list[str]] = {}
+    rows = db.execute(
+        select(VerificationRequest.user_id, VerificationRequest.kind)
+        .where(VerificationRequest.status == "pending")
+        .order_by(VerificationRequest.user_id, VerificationRequest.kind)
+    ).all()
+    for user_id, kind in rows:
+        kinds = waiting.setdefault(user_id, [])
+        if kind not in kinds:
+            kinds.append(kind)
+    return waiting
 
 
 def _sort_value(f: a.FarmerAccount, key: str):
@@ -370,11 +387,14 @@ def page_farmers(db: DB, params: dict[str, str | None], page: int, page_size: in
     config = platform_store.credit_config(db)
     now = now_utc()
     people = [f for f in accounts(db, config) if not f.is_guest]
+    waiting = pending_checks(db)
     summary = {
         "all": len(people),
         "active": sum(1 for f in people if f.status == "active"),
         "suspended": sum(1 for f in people if f.status == "suspended"),
         "pending_verification": sum(1 for f in people if f.status == "pending_verification"),
+        # Farmers with a phone, location or Ghana Card check waiting for an admin's review.
+        "pending_review": sum(1 for f in people if f.user_id in waiting),
     }
     facets = {
         "regions": sorted({f.profile.region for f in people if f.profile.region}),
@@ -407,6 +427,8 @@ def page_farmers(db: DB, params: dict[str, str | None], page: int, page_size: in
         if verification == "no-card" and v.ghana_card:
             return False
         if verification == "no-phone" and v.phone:
+            return False
+        if verification == "pending-review" and f.user_id not in waiting:
             return False
         joined = f.created_at.date().isoformat()
         if joined_from and joined < joined_from:
@@ -441,6 +463,8 @@ def page_farmers(db: DB, params: dict[str, str | None], page: int, page_size: in
         "pageCount": pages,
         "summary": summary,
         "facets": facets,
+        # The checks waiting for review, for the farmers on this page only.
+        "pendingChecks": {i.user_id: waiting[i.user_id] for i in items if i.user_id in waiting},
         # Every matching ID, only when asked (for "export all filtered").
         **({"ids": [f.user_id for f in matching]} if params.get("ids") == "1" else {}),
     }
