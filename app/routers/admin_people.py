@@ -109,7 +109,7 @@ def farmers_page(
     crop: Annotated[str | None, Query(max_length=400)] = None,
     status: Literal["active", "suspended", "pending_verification"] | None = None,
     band: Annotated[str | None, Query(max_length=60)] = None,
-    verification: Literal["full", "no-card", "no-phone"] | None = None,
+    verification: Literal["full", "no-card", "no-phone", "pending-review"] | None = None,
     joined_from: Annotated[str | None, Query(alias="joinedFrom", pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     joined_to: Annotated[str | None, Query(alias="joinedTo", pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     records: Literal["yes", "no"] | None = None,
