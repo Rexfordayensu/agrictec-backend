@@ -19,13 +19,14 @@ from app.services.seed import Random, build_world
 
 def record(
     kind: str, amount: float, days_ago: int = 0, rid: str = "r", on: date | None = None,
-    entered: datetime | None = None,
+    entered: datetime | None = None, status: str = "self_reported",
 ) -> FarmRecord:
     """A record entered on the day it describes, unless `entered` says when it was typed in."""
     day = on or today() - timedelta(days=days_ago)
     return FarmRecord(
         id=rid, user_id="u", type=kind, description="x", crop="Maize", amount=amount,
         date=day, created_at=entered or datetime(day.year, day.month, day.day, 12, tzinfo=UTC),
+        verification_status=status,
     )
 
 
@@ -38,8 +39,8 @@ def test_empty_farmer_scores_the_floor():
 def test_score_rewards_records_profit_and_verification():
     # One income per calendar month for the six-month window ending on a fixed day.
     now = date(2026, 10, 15)
-    records = [record("income", 5000, rid=f"i{m}", on=date(2026, m, 10)) for m in range(5, 11)]
-    records.append(record("expense", 1000, rid="e", on=date(2026, 10, 12)))
+    records = [record("income", 5000, rid=f"i{m}", on=date(2026, m, 10), status="verified") for m in range(5, 11)]
+    records.append(record("expense", 1000, rid="e", on=date(2026, 10, 12), status="verified"))
     profile = Profile(
         user_id="u", name="Ama", phone="0241234567", farm_name="Farm", acres=3,
         verification={"phone": True, "location": True}, ghana_card={"status": "verified"},
@@ -56,7 +57,10 @@ def test_back_dated_entries_and_a_bare_map_pin_dont_build_the_score():
     """Six months of "history" typed in today, and a pin nobody has checked, earn nothing."""
     now = date(2026, 10, 15)
     today_ = datetime(2026, 10, 15, 9, tzinfo=UTC)
-    back_dated = [record("income", 5000, rid=f"b{m}", on=date(2026, m, 10), entered=today_) for m in range(5, 11)]
+    back_dated = [
+        record("income", 5000, rid=f"b{m}", on=date(2026, m, 10), entered=today_, status="verified")
+        for m in range(5, 11)
+    ]
     score = calculate_credit_score(back_dated, [], Profile(user_id="u", gps={"lat": 6.7, "lng": -1.6}), now=now)
     # Only September's and October's entries were typed in within the 45-day grace period.
     assert score.payment_history == 33
