@@ -159,6 +159,10 @@ class FarmRecord(TransactionFields, Base):
     date: Mapped[date] = mapped_column(Date, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
     direction: Mapped[str | None] = mapped_column(String(3))
+    # How the money was paid (payment_method: cash, bank or mobile_money): the bank's name, or
+    # the MoMo network. A bank reference is kept in external_reference.
+    network: Mapped[str | None] = mapped_column(String(16))
+    bank_name: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = created_column()
 
     __table_args__ = (

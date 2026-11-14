@@ -293,14 +293,15 @@ def clean_file(data: bytes):
     return cleaned, "image/webp"
 
 
-def attach(db, user_id, kind, record_id, data, filename, evidence_kind):
-    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"evidence:{user_id}"})
-    row = entry(db, kind, record_id, user_id, lock=True)
-    cleaned, content_type = clean_file(data)
+def link_file(db, user_id, kind, row, data, filename, evidence_kind, cleaned=None, content_type=None) -> bool:
+    """Stores the file (once per farmer) and links it to the entry. False if it was already linked.
+    The caller holds the farmer's evidence lock and commits."""
+    if cleaned is None:
+        cleaned, content_type = clean_file(data)
     digest = hashlib.sha256(data).hexdigest()
     existing = db.scalar(select(Evidence).where(Evidence.user_id == user_id, Evidence.sha256 == digest))
     if existing and db.get(Link, (existing.id, kind, row.id)):
-        return item(db, row, kind)
+        return False
     if len(evidence_rows(db, kind, row.id)) >= MAX_FILES:
         raise AppError("Each transaction can have at most 5 evidence files.")
     if existing is None:
@@ -325,11 +326,39 @@ def attach(db, user_id, kind, record_id, data, filename, evidence_kind):
         db.add(existing)
         db.flush()
     db.add(Link(evidence_id=existing.id, record_kind=kind, record_id=row.id))
+    return True
+
+
+def lock_evidence(db, user_id):
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"evidence:{user_id}"})
+
+
+def send_momo_for_review(db, row, reason, kind="momo"):
+    """A MoMo entry (or a farm record paid by mobile money) with its receipt goes straight to
+    AgriCtec's review queue."""
+    next_status = transition(row.verification_status, "request_review", evidence_count=1)
+    change_status(db, row, kind, next_status, reason=reason)
+
+
+def paid_by_momo(kind, row) -> bool:
+    return kind == "momo" or getattr(row, "payment_method", None) == "mobile_money"
+
+
+def attach(db, user_id, kind, record_id, data, filename, evidence_kind):
+    lock_evidence(db, user_id)
+    row = entry(db, kind, record_id, user_id, lock=True)
+    if not link_file(db, user_id, kind, row, data, filename, evidence_kind):
+        return item(db, row, kind)
     change_status(
         db, row, kind, transition(row.verification_status, "attach"), reason="Evidence attached; not a verification."
     )
+    queued = paid_by_momo(kind, row) and row.verification_status == "evidence_submitted"
+    if queued:
+        send_momo_for_review(db, row, "MoMo receipt uploaded; sent for review.", kind)
     db.commit()
     bus.publish("account", user_id)
+    if queued:  # the admin review queue changed
+        bus.publish("platform")
     return item(db, row, kind)
 
 

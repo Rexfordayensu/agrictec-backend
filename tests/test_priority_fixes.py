@@ -12,7 +12,7 @@ from app.domain.clock import now_utc
 from app.domain.plans import AI_COSTS, month_key
 from app.models import CreditReservation
 from app.services import subscriptions
-from tests.conftest import API, ONBOARDING, signup
+from tests.conftest import API, ONBOARDING, signup, add_momo, add_record
 
 
 def test_farmer_backup_restores_financing_and_optional_momo_reference():
@@ -22,15 +22,15 @@ def test_farmer_backup_restores_financing_and_optional_momo_reference():
         "type": "financing", "direction": "in", "category": "loan_disbursement",
         "description": "Recorded financing", "crop": "Maize", "amount": 123.45,
         "date": "2026-10-01", "notes": "Financing note", "sourceType": "statement_upload",
-        "paymentMethod": "bank transfer", "externalReference": "FIN-1",
+        "paymentMethod": "bank", "bankName": "GCB Bank", "externalReference": "FIN-1",
     }
     momo = {
         "direction": "out", "counterparty": "Supplier", "amount": 12.30, "date": "2026-10-02",
         "category": "seed", "notes": "Paid for seed", "paymentMethod": "mobile money",
         "externalReference": "SEED-1", "sourceType": "farmer_entry",
     }
-    assert client.post(f"{API}/me/records", json=record).status_code == 201
-    assert client.post(f"{API}/me/momo", json=momo).status_code == 201
+    assert add_record(client, record).status_code == 201
+    assert add_momo(client, momo).status_code == 201
     exported = client.get(f"{API}/me/export").json()
     # A copied file cannot assert that an entry was verified by a reviewer.
     exported["records"][0]["verificationStatus"] = "verified"

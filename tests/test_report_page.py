@@ -2,7 +2,7 @@
 from datetime import timedelta
 
 from app.domain.clock import today
-from tests.conftest import API, signup
+from tests.conftest import API, signup, add_record
 
 
 def test_report_page_totals_recent_rows_and_real_evidence_refresh(monkeypatch):
@@ -12,7 +12,7 @@ def test_report_page_totals_recent_rows_and_real_evidence_refresh(monkeypatch):
     owner, other = signup(), signup("other-report-page@example.com")
 
     def add(client, amount, description, **values):
-        r = client.post(f"{API}/me/records", json={"type": "income", "amount": amount, "crop": "Maize",
+        r = add_record(client, {"type": "income", "amount": amount, "crop": "Maize",
                        "description": description, "date": today().isoformat(), **values})
         assert r.status_code == 201, r.text
         return r.json()

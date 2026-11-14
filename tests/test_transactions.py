@@ -17,13 +17,11 @@ from app.db import SessionLocal, engine
 from app.domain.transactions import transition
 from app.models import AuditEntry, StoredFile, TransactionEvidence, TransactionEvidenceLink, TransactionVerification
 from app.services.transactions import MAX_BYTES, clean_file
-from tests.conftest import API, HERE, ADMIN_PASSWORD, admin_with_role, signup, super_admin
+from tests.conftest import API, HERE, ADMIN_PASSWORD, admin_with_role, signup, super_admin, add_momo, add_record
 
 
 def add(farmer, **values):
-    response = farmer.post(
-        f"{API}/me/records",
-        json={
+    response = add_record(farmer, {
             "type": "income",
             "description": "Produce sold",
             "crop": "Maize",
@@ -127,9 +125,7 @@ def test_exact_summary_and_duplicates():
     summary = farmer.get(f"{API}/me/transactions/summary?months=3").json()
     assert summary["income"] == "0.30" and summary["expenses"] == "0.10" and summary["net"] == "0.20"
     assert summary["financingIn"] == "1000.00" and summary["momoIn"] == "0.00"
-    duplicate = farmer.post(
-        f"{API}/me/records",
-        json={
+    duplicate = add_record(farmer, {
             "type": "income",
             "description": "Another sale",
             "crop": "Rice",
@@ -140,16 +136,14 @@ def test_exact_summary_and_duplicates():
     assert duplicate.status_code == 409 and duplicate.json()["code"] == "possible_duplicate"
     add(farmer, amount="0.10", confirmDuplicate=True)
     body = {"direction": "in", "counterparty": "Buyer", "amount": "20.00", "date": date.today().isoformat()}
-    first = farmer.post(f"{API}/me/momo", json={**body, "reference": "REF-REAL"})
+    first = add_momo(farmer, {**body, "reference": "REF-REAL"})
     assert first.status_code == 201
-    duplicate = farmer.post(f"{API}/me/momo", json={**body, "reference": "ref-real", "confirmDuplicate": True})
+    duplicate = add_momo(farmer, {**body, "reference": "ref-real", "confirmDuplicate": True})
     assert duplicate.status_code == 409 and duplicate.json()["code"] == "duplicate_reference"
-    unknown = farmer.post(f"{API}/me/momo", json={**body, "amount": "21.00"})
+    unknown = add_momo(farmer, {**body, "amount": "21.00"})
     assert unknown.status_code == 201 and unknown.json()["reference"] is None
     assert (
-        farmer.post(
-            f"{API}/me/records",
-            json={
+        add_record(farmer, {
                 "type": "income",
                 "description": "Provider claim",
                 "crop": "Maize",

@@ -2,14 +2,14 @@
 
 from app.models import Profile
 from app.services import account, lending
-from tests.conftest import API, ONBOARDING, signup
+from tests.conftest import API, ONBOARDING, signup, add_record
 
 
 def test_low_and_high_scores_leave_the_same_history_and_loan_checks_unchanged(db, monkeypatch):
     client = signup()
     assert client.post(f"{API}/me/onboarding/complete", json=ONBOARDING).status_code == 200
     user_id = client.get(f"{API}/auth/session").json()["userId"]
-    assert client.post(f"{API}/me/records", json={
+    assert add_record(client, {
         "type": "income", "description": "Farm sale", "crop": "Maize", "amount": "30.10", "date": "2026-10-01",
     }).status_code == 201
     profile = db.get(Profile, user_id)

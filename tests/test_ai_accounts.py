@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.integrations import claude, messaging
 from app.models import PasswordReset, ReportSchedule
 from app.services import password_reset, report_schedules
-from tests.conftest import API, ONBOARDING, admin_with_role, audit_count, new_client, signup, super_admin
+from tests.conftest import API, ONBOARDING, admin_with_role, audit_count, new_client, signup, super_admin, add_record
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def photo(width=3000, height=2000, fmt="JPEG") -> bytes:
 def test_claude_answers_with_the_farmers_own_figures(ai_on):
     calls, answers = ai_on
     c = farmer_on_premium()
-    c.post(f"{API}/me/records", json={"type": "income", "description": "Maize sale", "crop": "Maize", "amount": 1200, "date": "2026-10-01"})
+    add_record(c, {"type": "income", "description": "Maize sale", "crop": "Maize", "amount": 1200, "date": "2026-10-01"})
     # An earlier exchange, saved by the API itself (the browser can't write the conversation).
     answers.append({"title": "Planting maize", "intro": "At the start of the rains.", "bullets": [], "tip": ""})
     first = c.post(f"{API}/me/assistant", json={"message": "When should I plant maize?"})
