@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, literal, select, text, union_all
 from sqlalchemy.orm import Session as DB
 
 from app.core.audit import append_audit
+from app.config import get_settings
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.core.events import bus
 from app.domain.clock import add_months, iso, month_start, now_utc, today
@@ -302,9 +303,26 @@ def link_file(db, user_id, kind, row, data, filename, evidence_kind, cleaned=Non
     existing = db.scalar(select(Evidence).where(Evidence.user_id == user_id, Evidence.sha256 == digest))
     if existing and db.get(Link, (existing.id, kind, row.id)):
         return False
+    # A receipt proves one payment: the same receipt can't back a second entry. (A statement
+    # or other document may cover several entries.)
+    if existing is not None and "receipt" in (evidence_kind, existing.kind):
+        used = db.scalar(select(func.count()).select_from(Link).where(Link.evidence_id == existing.id))
+        if used:
+            raise AppError(
+                "This receipt is already attached to another transaction. Each receipt proves one payment.",
+                code="receipt_reused",
+            )
     if len(evidence_rows(db, kind, row.id)) >= MAX_FILES:
         raise AppError("Each transaction can have at most 5 evidence files.")
     if existing is None:
+        quota = get_settings().evidence_quota_bytes
+        stored = db.scalar(select(func.coalesce(func.sum(Evidence.size_bytes), 0)).where(Evidence.user_id == user_id))
+        if stored + len(cleaned) > quota:
+            raise AppError(
+                f"Your receipts and evidence files have reached your {quota // (1024 * 1024)} MB storage "
+                "limit. Remove files you no longer need, or contact AgriCtec.",
+                code="storage_full",
+            )
         evidence_id = new_id()
         key = f"evidence/{user_id}/{evidence_id}"
         store(db).put(key, cleaned, content_type)
@@ -417,6 +435,7 @@ def review_queue(db, actor, page, page_size):
                 "farmerName": profile.name if profile and profile.name else "Not provided",
                 "region": profile.region if profile and profile.region else "Not provided",
                 "entry": item(db, row, r.kind),
+                "warnings": cross_account_warnings(db, r.kind, row),
             }
         )
     append_audit(
@@ -431,6 +450,49 @@ def review_queue(db, actor, page, page_size):
     return dict(
         items=items, total=total, page=page, pageSize=page_size, pageCount=max(1, (total + page_size - 1) // page_size)
     )
+
+
+def cross_account_warnings(db, kind, row) -> list[str]:
+    """What the reviewer should know before verifying: the same receipt file, or the same MoMo
+    transaction ID, on another farmer's account. (A buyer and a seller can both record one payment,
+    so this is a warning to check, not a block.)"""
+    warnings = []
+    digests = [e.sha256 for e in evidence_rows(db, kind, row.id)]
+    if digests:
+        others = db.scalar(
+            select(func.count(func.distinct(Evidence.user_id))).where(
+                Evidence.sha256.in_(digests), Evidence.user_id != row.user_id
+            )
+        )
+        if others:
+            warnings.append(
+                f"The same receipt file was also uploaded by {others} other farmer"
+                f"{'s' if others > 1 else ''}. Check that this payment is really this farmer's."
+            )
+    if kind == "momo":
+        reference = row.reference or row.external_reference
+    else:  # a farm record carries a MoMo ID only when it was paid by mobile money
+        reference = row.external_reference if row.payment_method == "mobile_money" else None
+    if reference:
+        ref = reference.strip().upper()
+        momo_users = db.scalars(
+            select(func.distinct(MomoTransaction.user_id)).where(
+                func.upper(MomoTransaction.reference) == ref, MomoTransaction.user_id != row.user_id
+            )
+        ).all()
+        record_users = db.scalars(
+            select(func.distinct(FarmRecord.user_id)).where(
+                func.upper(FarmRecord.external_reference) == ref, FarmRecord.user_id != row.user_id
+            )
+        ).all()
+        count = len(set(momo_users) | set(record_users))
+        if count:
+            warnings.append(
+                f"MoMo transaction ID {reference.strip()} is also recorded by {count} other farmer"
+                f"{'s' if count > 1 else ''}. Fine if one paid the other; otherwise the same payment "
+                "is claimed twice."
+            )
+    return warnings
 
 
 def review(db, actor, kind, record_id, decision, reason):

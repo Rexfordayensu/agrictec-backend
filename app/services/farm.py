@@ -115,6 +115,24 @@ def _check_date(value) -> None:
         raise AppError("The date can't be in the future.")
 
 
+def _check_entry_cap(db: DB, user_id: str) -> None:
+    """At most MONTHLY_ENTRY_LIMIT new records and MoMo entries a calendar month, together: far
+    above any real farm's needs, and a stop on scripted mass entry."""
+    from app.config import get_settings
+
+    limit = get_settings().monthly_entry_limit
+    start = now_utc().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    made = sum(
+        db.scalar(select(func.count()).select_from(model).where(model.user_id == user_id, model.created_at >= start)) or 0
+        for model in (FarmRecord, MomoTransaction)
+    )
+    if made >= limit:
+        raise AppError(
+            f"You've added {limit:,} entries this month, the monthly limit. Contact AgriCtec if your farm needs more.",
+            code="entry_limit",
+        )
+
+
 PAYMENT_METHODS = ("cash", "bank", "mobile_money")
 MOMO_NETWORKS = ("MTN", "Telecel", "AirtelTigo")
 
@@ -150,6 +168,7 @@ def create_record(
     """A record paid by mobile money comes with its MoMo receipt and goes straight to AgriCtec's
     review; a cash or bank record (or an activity) is saved as the farmer's own entry."""
     _check_date(data.date)
+    _check_entry_cap(db, user_id)
     values = _record_fields(data.model_dump())
     _check_payment(values, has_receipt=receipt is not None)
     cleaned = content_type = None
@@ -274,6 +293,7 @@ def create_momo(db: DB, user_id: str, data: f.MomoInput, receipt: bytes, filenam
     """Every MoMo transaction is saved together with its receipt and goes straight to AgriCtec's
     review queue: an admin checks the receipt and verifies or rejects the entry."""
     _check_date(data.date)
+    _check_entry_cap(db, user_id)
     # The receipt is checked before anything is written, so a bad file saves nothing.
     cleaned, content_type = transactions.clean_file(receipt)
     values = data.model_dump()

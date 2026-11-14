@@ -69,6 +69,14 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         openapi_url=f"{settings.api_prefix}/openapi.json",
     )
+    from app.core.body_limit import BodyLimit
+
+    app.add_middleware(
+        BodyLimit,
+        default=settings.max_request_bytes,
+        overrides={"/system/backup/summary": settings.max_backup_bytes,
+                   "/system/restore": settings.max_backup_bytes},
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

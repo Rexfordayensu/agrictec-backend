@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # Days without any use before a farmer is signed out (phones are often shared). The session
     # still ends after FARMER_SESSION_DAYS at most.
     farmer_idle_days: int = 7
+    # The largest request accepted (bytes): a 10 MB crop photo plus room. The admin's full
+    # backup restore may be larger.
+    max_request_bytes: int = 15 * 1024 * 1024
+    max_backup_bytes: int = 250 * 1024 * 1024
+    # Each farmer's receipts and evidence files together, and new entries a month.
+    evidence_quota_bytes: int = 200 * 1024 * 1024
+    monthly_entry_limit: int = 1500
     # Admin spec: 30 minutes of inactivity signs an admin out; 12 hours at most per sign-in.
     admin_idle_minutes: int = 30
     admin_session_hours: int = 12

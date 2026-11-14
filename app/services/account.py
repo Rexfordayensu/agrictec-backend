@@ -1,9 +1,15 @@
 """The farmer's account as a whole: credit summary, onboarding, announcements and the farmer's
 own data export, import and deletion (services/onboarding.service.ts, lib/data/backup.ts)."""
 
+import hashlib
+import hmac
+import json
+from decimal import Decimal
+
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
 from app.core.errors import AppError
 from app.domain.announcements import by_severity, in_audience, is_live
 from app.domain.clock import now_utc, parse_iso
@@ -140,13 +146,45 @@ def complete_onboarding(db: DB, user: User, data: f.OnboardingComplete) -> f.Pro
 # ---------- The farmer's own data ----------
 
 
+def _canonical(entries) -> list[dict]:
+    """The signed form of entries: their input fields, money as 2-decimal text, keys sorted."""
+    out = []
+    for entry in entries:
+        values = entry.model_dump(mode="json", by_alias=True)
+        if values.get("amount") is not None:
+            values["amount"] = f"{Decimal(str(values['amount'])):.2f}"
+        out.append(values)
+    return out
+
+
+def backup_signature(user_id: str, records: list[f.RecordInput], momo: list[f.MomoInput]) -> str:
+    """HMAC (server secret) over the account and every record and MoMo entry in the file. A file
+    that was edited, made by hand, or exported from another account doesn't match, so a backup
+    can't be used to add entries (such as MoMo payments without their receipt)."""
+    payload = json.dumps(
+        {"userId": user_id, "records": _canonical(records), "momo": _canonical(momo)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    key = get_settings().secret_key.encode("utf-8")
+    return hmac.new(key, f"agrictec-backup:v1:{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def export_data(db: DB, user_id: str) -> f.DataExport:
     diagnoses = [d.model_copy(update={"image_thumb": None}) for d in farm.list_diagnoses(db, user_id)]
+    records = farm.list_records(db, user_id)
+    momo = farm.list_momo(db, user_id)
+    signature = backup_signature(
+        user_id,
+        [f.RecordInput.model_validate(r.model_dump()) for r in records],
+        [f.MomoInput.model_validate(t.model_dump()) for t in momo],
+    )
     return f.DataExport(
         exported_at=now_utc(),
+        signature=signature,
         profile=farm.get_profile(db, user_id),
-        records=farm.list_records(db, user_id),
-        momo=farm.list_momo(db, user_id),
+        records=records,
+        momo=momo,
         diagnoses=diagnoses,
         chat=farm.list_chat(db, user_id),
         settings=farm.get_settings_for(db, user_id),
@@ -170,7 +208,15 @@ def _clear_own_data(db: DB, user_id: str, *, keep_ai_history: bool = False) -> N
 def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
     """Replaces the farmer's records, MoMo, settings and editable profile, all or nothing. The
     Ghana Card, verifications, admin notes, loan applications, diagnoses and the assistant
-    conversation are kept: they are written by the platform, never taken from a file."""
+    conversation are kept: they are written by the platform, never taken from a file.
+    Only an unchanged file exported by AgriCtec for this same account is accepted."""
+    expected = backup_signature(user_id, data.records, data.momo)
+    if not data.signature or not hmac.compare_digest(data.signature, expected):
+        raise AppError(
+            "This file was changed, or wasn't exported from your AgriCtec account, so it can't be "
+            "restored. Use a file from Export my data, unedited.",
+            code="backup_signature",
+        )
     try:
         fields = f.ProfileFields.model_validate(data.profile)
     except ValueError as error:

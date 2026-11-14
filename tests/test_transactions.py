@@ -231,9 +231,14 @@ def test_evidence_dedup_count_edit_and_orphan_cleanup():
     farmer = signup()
     first = add(farmer)
     second = add(farmer, amount="13.00")
-    evidence = upload(farmer, first).json()["evidence"][0]
-    assert upload(farmer, first).status_code == 200
-    assert upload(farmer, second).status_code == 200
+    # One statement may cover several entries (a receipt may not: see test_receipt_reuse).
+    def statement(row):
+        return farmer.post(f"{API}/me/transactions/farm/{row['id']}/evidence",
+                           files={"file": ("statement.pdf", b"%PDF-1.7 statement", "application/pdf")},
+                           data={"evidence_kind": "statement"})
+    evidence = statement(first).json()["evidence"][0]
+    assert statement(first).status_code == 200
+    assert statement(second).status_code == 200
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(TransactionEvidence)) == 1
         assert db.scalar(select(func.count()).select_from(TransactionEvidenceLink)) == 2
