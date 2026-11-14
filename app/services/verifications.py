@@ -4,7 +4,7 @@ A phone passes once the farmer types back the code texted to it (an approved rec
 the admin's history). A farm location and a Ghana Card wait in the admin's queue until approved.
 Only a masked card number and a server-side fingerprint are ever stored."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DB
 
@@ -28,7 +28,7 @@ from app.domain.verification import (
     rejection_message,
 )
 from app.integrations import identity
-from app.models import Admin, Notification, User, VerificationRequest
+from app.models import Admin, Notification, Profile, User, VerificationRequest
 from app.schemas.farm import VerificationRequest as VerificationOut
 from app.services import farm, notifications, phone_verification
 from app.services.farmer_data import display_name
@@ -60,7 +60,26 @@ def list_all(db: DB, *, status: str | None = None, kind: str | None = None, user
         query = query.where(VerificationRequest.kind == kind)
     if user_id:
         query = query.where(VerificationRequest.user_id == user_id)
-    return [verification_out(r) for r in db.scalars(query)]
+    out = []
+    for r in db.scalars(query):
+        item = verification_out(r)
+        if r.kind == "ghanaCard" and r.status == "pending":
+            item.card_on_other_accounts = _card_verified_elsewhere(db, r)
+        out.append(item)
+    return out
+
+
+def _card_verified_elsewhere(db: DB, request: VerificationRequest) -> int:
+    """Other accounts on which this same Ghana Card (by its keyed fingerprint) is verified."""
+    if not request.value_hash:
+        return 0
+    return db.scalar(
+        select(func.count()).select_from(Profile).where(
+            Profile.ghana_card_hash == request.value_hash,
+            Profile.ghana_card_status == "verified",
+            Profile.user_id != request.user_id,
+        )
+    ) or 0
 
 
 def _set_profile_card(db: DB, request: VerificationRequest) -> None:
@@ -216,6 +235,13 @@ def approve(db: DB, actor: Admin, request_id: str, commit: bool = True) -> Verif
     request = _find(db, request_id)
     if request.status != "pending":
         raise AppError("This request has already been reviewed.")
+    # One Ghana Card belongs to one person: it can't be verified on a second account.
+    if request.kind == "ghanaCard" and _card_verified_elsewhere(db, request):
+        raise Conflict(
+            "This Ghana Card is already verified on another AgriCtec account, so it can't be approved "
+            "here. Reject this request, or check under Risk & Fraud which account the card belongs to.",
+            code="card_on_other_account",
+        )
     request.status = "approved"
     request.reviewed_by = actor.name
     request.reviewed_at = now_utc()

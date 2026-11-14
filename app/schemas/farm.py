@@ -520,6 +520,8 @@ class VerificationRequest(CamelModel):
     note: str | None = None
     # Admins only: an identity provider's answer for a Ghana Card (no card number).
     identity_check: dict[str, Any] | None = None
+    # Admins only: other accounts on which this same Ghana Card is already verified.
+    card_on_other_accounts: int = 0
 
 
 class VerificationSubmit(CamelModel):
