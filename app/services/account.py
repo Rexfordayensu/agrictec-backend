@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
 from app.core.errors import AppError
+from app.core.events import bus
 from app.domain.announcements import by_severity, in_audience, is_live
 from app.domain.clock import now_utc, parse_iso
 from app.domain.credit import SCORE_NAME, calculate_credit_score, score_factors, score_gaps, score_label
@@ -140,6 +141,8 @@ def complete_onboarding(db: DB, user: User, data: f.OnboardingComplete) -> f.Pro
     row.onboarding_completed_at = now_utc()
     farm.clear_draft(db, user.id, commit=False)
     db.commit()
+    # An open admin console updates its regions, crops and scores live.
+    bus.publish("account", user.id)
     return farm.get_profile(db, user.id)
 
 
