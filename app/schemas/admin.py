@@ -17,8 +17,11 @@ from app.schemas.platform import CreditConfig
 
 AdminRole = Literal["analyst", "support", "admin", "super_admin"]
 AccountStatus = Literal["active", "suspended", "pending_verification"]
+# Every kind of record the audit log names (tests/test_audit_target_types.py checks the code
+# never writes one missing here: one unknown entry would stop the log and the overview loading).
 TargetType = Literal[
-    "farmer", "loan", "lender", "config", "content", "announcement", "risk", "admin", "system"
+    "farmer", "loan", "lender", "loan_product", "config", "settings", "content", "announcement",
+    "risk", "transaction", "evidence", "admin", "system",
 ]
 
 # ---------- Auth and team ----------

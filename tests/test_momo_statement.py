@@ -59,6 +59,8 @@ def test_momo_writes_notify_only_the_owning_account(monkeypatch):
     monkeypatch.setattr(farm.bus, "publish", lambda topic, user_id=None: updates.append((topic, user_id)))
     owner, other = signup(), signup("other-live@example.com")
     user_id = owner.get(f"{API}/auth/session").json()["userId"]
+    # Signing up is announced too (the console's live overview); count the MoMo writes only.
+    updates.clear()
     row = add(owner)
     assert other.patch(f"{API}/me/momo/{row['id']}", json={"amount": "5.00"}).status_code == 404
     assert owner.patch(f"{API}/me/momo/{row['id']}", json={"amount": "15.15"}).status_code == 200

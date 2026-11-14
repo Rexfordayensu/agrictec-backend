@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session as DB
 from app.config import get_settings
 from app.core.errors import SUSPENDED_MESSAGE, AppError, Conflict, Forbidden, Unauthorized
 from app.core.security import hash_password, verify_password
+from app.core.events import bus
 from app.core.sessions import create_session, end_session
 from app.domain.clock import now_utc
 from app.domain.passwords import farmer_password_problem
@@ -70,7 +71,10 @@ def sign_up(db: DB, email: str, password: str) -> tuple[str, Session]:
     except IntegrityError:
         db.rollback()
         raise Conflict("An account with this email already exists") from None
-    return _start(db, user)
+    started = _start(db, user)
+    # Saved: an open admin console updates its figures live (new farmer, growth chart).
+    bus.publish("account", user.id)
+    return started
 
 
 def _check_password(db: DB, email: str, password: str, client: str) -> User | None:
