@@ -249,6 +249,12 @@ def save_settings(body: f.AppSettings, ctx: Writer, db: Database):
     return farm.save_settings(db, ctx.user.id, body)
 
 
+@router.post("/tour", response_model=f.AppSettings)
+def tour_seen(ctx: Writer, db: Database):
+    """The farmer finished or skipped the app tour, so it doesn't open by itself again."""
+    return farm.mark_tour_seen(db, ctx.user.id)
+
+
 # ---------- Credit, loans, verifications ----------
 
 
