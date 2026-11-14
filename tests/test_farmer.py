@@ -172,9 +172,10 @@ def test_export_import_and_delete_my_data():
     body = {
         "version": 1,
         "profile": exported["profile"],
-        "records": [{k: r[k] for k in ("type", "description", "crop", "amount", "date")} for r in exported["records"]],
-        "momo": [],
+        "records": exported["records"],
+        "momo": exported["momo"],
         "settings": exported["settings"],
+        "signature": exported["signature"],
     }
     assert c.post(f"{API}/me/import", json=body).status_code == 200
     assert len(c.get(f"{API}/me/records").json()) == 1

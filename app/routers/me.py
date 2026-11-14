@@ -70,7 +70,12 @@ def list_records(ctx: Reader, db: Database):
     return farm.list_records(db, ctx.user.id)
 
 
-@router.post("/records", response_model=f.FarmRecord, status_code=201)
+@router.post(
+    "/records",
+    response_model=f.FarmRecord,
+    status_code=201,
+    dependencies=[Depends(rate_limit("record-create", 120, 3600))],
+)
 def create_record(body: f.RecordInput, ctx: Writer, db: Database):
     """A cash or bank record, or an activity. A record paid by mobile money needs its receipt:
     send it to /me/records/with-receipt."""
@@ -116,12 +121,12 @@ def clear_records(ctx: Writer, db: Database):
     farm.replace_records(db, ctx.user.id, [])
 
 
-@router.patch("/records/{record_id}", response_model=f.FarmRecord)
+@router.patch("/records/{record_id}", response_model=f.FarmRecord, dependencies=[Depends(rate_limit("record-change", 300, 3600))])
 def update_record(record_id: str, body: f.RecordPatch, ctx: Writer, db: Database):
     return farm.update_record(db, ctx.user.id, record_id, body)
 
 
-@router.delete("/records/{record_id}", status_code=204)
+@router.delete("/records/{record_id}", status_code=204, dependencies=[Depends(rate_limit("record-change", 300, 3600))])
 def delete_record(record_id: str, ctx: Writer, db: Database):
     farm.delete_record(db, ctx.user.id, record_id)
 
@@ -196,12 +201,12 @@ def clear_momo(ctx: Writer, db: Database):
     farm.replace_momo(db, ctx.user.id, [])
 
 
-@router.patch("/momo/{momo_id}", response_model=f.MomoTransaction)
+@router.patch("/momo/{momo_id}", response_model=f.MomoTransaction, dependencies=[Depends(rate_limit("momo-change", 300, 3600))])
 def update_momo(momo_id: str, body: f.MomoPatch, ctx: Writer, db: Database):
     return farm.update_momo(db, ctx.user.id, momo_id, body)
 
 
-@router.delete("/momo/{momo_id}", status_code=204)
+@router.delete("/momo/{momo_id}", status_code=204, dependencies=[Depends(rate_limit("momo-change", 300, 3600))])
 def delete_momo(momo_id: str, ctx: Writer, db: Database):
     farm.delete_momo(db, ctx.user.id, momo_id)
 
@@ -406,7 +411,7 @@ def subscription_payments(ctx: Reader, db: Database):
     return billing.history(db, ctx.user.id)
 
 
-@router.get("/subscription/payments/{reference}/receipt")
+@router.get("/subscription/payments/{reference}/receipt", dependencies=[Depends(rate_limit("billing-receipt", 30, 3600))])
 def subscription_receipt(reference: str, ctx: Reader, db: Database):
     """A PDF receipt for one of the farmer's own payments."""
     from app.services import billing
@@ -460,18 +465,18 @@ def predict_yield(body: f.YieldInput, ctx: Reader, db: Database):
 # ---------- The farmer's data ----------
 
 
-@router.get("/export", response_model=f.DataExport)
+@router.get("/export", response_model=f.DataExport, dependencies=[Depends(rate_limit("data-export", 20, 3600))])
 def export_data(ctx: Reader, db: Database):
     return account.export_data(db, ctx.user.id)
 
 
-@router.post("/import", response_model=Message)
+@router.post("/import", response_model=Message, dependencies=[Depends(rate_limit("data-import", 5, 86400))])
 def import_data(body: f.DataImport, ctx: Writer, db: Database):
     account.import_data(db, ctx.user.id, body)
     return Message(detail="Your data was restored.")
 
 
-@router.post("/delete-data", response_model=Message)
+@router.post("/delete-data", response_model=Message, dependencies=[Depends(rate_limit("data-delete", 5, 3600))])
 def delete_data(body: Confirmation, ctx: Writer, db: Database):
     """Type DELETE to confirm."""
     account.delete_data(db, ctx.user.id, body.confirmation)

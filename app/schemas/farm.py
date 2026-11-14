@@ -654,6 +654,9 @@ class DataExport(CamelModel):
     chat: list[ChatMessage]
     settings: AppSettings
     loan_applications: list[LoanApplication]
+    # Seals the records and MoMo entries to this account: only an unchanged file exported by
+    # AgriCtec for this same account can be restored.
+    signature: str
 
 
 class DataImport(CamelModel):
@@ -664,6 +667,7 @@ class DataImport(CamelModel):
     profile: dict[str, Any]
     records: Annotated[list[RecordInput], Field(max_length=10_000)]
     momo: Annotated[list[MomoInput], Field(max_length=10_000)]
+    signature: Annotated[str | None, Field(max_length=128)] = None
     # Accepted for older files but never restored: diagnoses and the conversation are written by
     # the API only (Claude reads the conversation back), so a file can't plant them.
     diagnoses: Annotated[list[dict[str, Any]], Field(max_length=10)] = []
