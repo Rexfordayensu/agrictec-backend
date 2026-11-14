@@ -17,7 +17,6 @@ from app.models import AuthSession
 
 FARMER_COOKIE = "agrictec_session"
 ADMIN_COOKIE = "agrictec_admin"
-GUEST_COOKIE = "agrictec_guest"
 # The read-only farmer view is per tab, like the demo's sessionStorage: the viewing tab sends its
 # token in this header (it keeps setting its own `agrictec_impersonating` hint for proxy.ts).
 IMPERSONATION_HEADER = "x-impersonation-token"

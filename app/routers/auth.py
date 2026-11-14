@@ -6,11 +6,11 @@ from sqlalchemy.orm import Session as DB
 from app.core.deps import AdminContext, FarmerContext, admin_context, farmer_context
 from app.core.errors import AppError
 from app.core.ratelimit import client_ip, rate_limit
-from app.core.sessions import GUEST_COOKIE, IMPERSONATION_HEADER, end_session, find_session, set_cookie
+from app.core.sessions import IMPERSONATION_HEADER, end_session, find_session
 from app.db import get_db
 from app.domain.clock import now_utc
 from app.models import Admin, Profile, User
-from app.routers.common import YEAR, clear_farmer_cookies, set_farmer_cookies
+from app.routers.common import clear_farmer_cookies, set_farmer_cookies
 from app.schemas.base import CamelModel, Message
 from app.schemas.farm import (
     Credentials,
@@ -76,12 +76,14 @@ def confirm_password_reset(body: PasswordResetConfirm, response: Response, db: D
     return _signed_in(db, response, token, session)
 
 
-@router.post("/guest", response_model=SignedIn, dependencies=[Depends(rate_limit("guest", 10, 3600))])
-def continue_as_guest(request: Request, response: Response, db: DB = Depends(get_db)):
-    """One guest per device, remembered by a signed cookie, so demo data never vanishes."""
-    token, session, device = auth.continue_as_guest(db, request.cookies.get(GUEST_COOKIE))
-    set_cookie(response, GUEST_COOKIE, device, YEAR)
-    return _signed_in(db, response, token, session)
+@router.post("/guest", include_in_schema=False)
+def continue_as_guest():
+    """Retired: the guest demo now runs in the web app only and nothing of it is stored here
+    (no account, no session, no data). Kept so an old open tab gets a clear answer."""
+    raise AppError(
+        "Guest mode has changed. Refresh the page and choose “Continue as guest” again.",
+        code="guest_demo_moved", status_code=410,
+    )
 
 
 @router.get("/session", response_model=Session)
