@@ -315,3 +315,39 @@ def test_without_email_a_due_report_is_recorded_as_failed(db):
     assert report_schedules.send_due(db) == 0
     db.refresh(row)
     assert row.last_status == "failed: email is not configured" and row.next_run_at > datetime.now(UTC)
+
+
+def test_a_reset_lifts_an_account_wide_sign_in_lock(codes, client, monkeypatch):
+    """Someone guessed at the account from many addresses and locked it: the owner resets their
+    password and can sign in straight away."""
+    from app.config import get_settings
+    from app.services import login_lockout
+
+    secret = "s" * 40
+    monkeypatch.setattr(get_settings(), "frontend_proxy_secret", secret)
+    signup("locked.out@example.com", "password123")
+    guesser = new_client()
+    for n in range(login_lockout.ACCOUNT_MAX_FAILURES):
+        guesser.post(f"{API}/auth/login", headers={"x-agrictec-proxy-secret": secret,
+                                                     "x-agrictec-client-ip": f"198.51.100.{n // 4 + 1}"},
+                     json={"email": "locked.out@example.com", "password": f"wrong-{n}"})
+    assert new_client().post(f"{API}/auth/login", json={"email": "locked.out@example.com", "password": "password123"}).status_code == 423
+    client.post(f"{API}/auth/password-reset/request", json={"email": "locked.out@example.com"})
+    code = codes["locked.out@example.com"][0]
+    r = client.post(f"{API}/auth/password-reset/confirm",
+                    json={"email": "locked.out@example.com", "code": code, "newPassword": "brandnew123"})
+    assert r.status_code == 200, r.text
+    assert new_client().post(f"{API}/auth/login", json={"email": "locked.out@example.com", "password": "brandnew123"}).status_code == 200
+
+
+def test_without_email_or_sms_the_live_site_says_reset_is_unavailable(settings, monkeypatch, client):
+    """No farmer is left waiting for a code that can never be sent. Said to everyone alike, so
+    it reveals nothing about which emails have accounts."""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "smtp_host", None)
+    monkeypatch.setattr(settings, "arkesel_api_key", None)
+    signup("waiting@example.com")
+    for email in ("waiting@example.com", "nobody@example.com"):
+        r = client.post(f"{API}/auth/password-reset/request", json={"email": email})
+        assert r.status_code == 503 and r.json()["code"] == "reset_unavailable"
+    assert "support" in r.json()["detail"]

@@ -49,7 +49,8 @@ class AdminSession(CamelModel):
 
 class AdminSignedIn(CamelModel):
     session: AdminSession
-    token: str
+    # Only with "X-AgriCtec-Client: api" (browsers use the httpOnly cookie).
+    token: str | None = None
 
 
 class LockStatus(CamelModel):
@@ -93,8 +94,10 @@ class TemporaryPassword(CamelModel):
 class FarmerStats(CamelModel):
     records: int
     momo: int
-    income: float
-    expenses: float
+    # A farmer's amounts are confidential: kept for platform-wide totals worked out here, and
+    # never sent to the console per farmer (only Transactions review shows an entry's amount).
+    income: float = Field(exclude=True)
+    expenses: float = Field(exclude=True)
     score: int
     diagnoses: int
 

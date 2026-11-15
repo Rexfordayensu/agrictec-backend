@@ -460,8 +460,6 @@ DATASETS: dict[str, dict] = {
             Column("size", "Farm size", _size),
             Column("crops", "Crops", lambda f: "; ".join(crop_names(f.profile)), True),
             Column("score", "AgriCtec score", lambda f: f.stats.score, True),
-            Column("income", "Income (GHS)", lambda f: f.stats.income, True),
-            Column("expenses", "Expenses (GHS)", lambda f: f.stats.expenses),
             Column("records", "Records", lambda f: f.stats.records),
             Column("momo", "MoMo transactions", lambda f: f.stats.momo),
             Column("card", "Ghana Card", lambda f: GHANA_CARD_LABELS[f.profile.ghana_card.status], True),

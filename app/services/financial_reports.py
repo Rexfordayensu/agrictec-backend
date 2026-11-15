@@ -15,7 +15,7 @@ from app.domain.clock import iso, now_utc, today
 from app.domain.financial_report import render
 from app.domain.financial_summary import period_bounds
 from app.integrations import storage
-from app.models import Admin, FarmRecord, FinancialReportExport, MomoTransaction, User, new_id
+from app.models import Admin, FarmRecord, FinancialReportExport, MomoTransaction, new_id
 from app.services import farm, financial_summary
 
 FARM_KINDS = {"income": "Income", "expense": "Expense", "activity": "Farm activity"}
@@ -120,15 +120,12 @@ def delete(db: DB, user_id: str, report_id: str) -> None:
     db.commit()
 
 
-def admin_list(db: DB, user_id: str) -> list[dict]:
-    if db.get(User, user_id) is None:
-        raise NotFound("Farmer not found.")
-    return list_for(db, user_id)
-
-
-def admin_file(db: DB, actor: Admin, user_id: str, report_id: str) -> tuple[bytes, str]:
+def application_statement(db: DB, actor: Admin, user_id: str, report_id: str) -> tuple[bytes, str]:
+    """The statement a farmer chose to attach to a loan application (their consent to share
+    it with the lender). The only way the console opens a farmer's report; each download is
+    audited. Never used to browse a farmer's reports."""
     data, name = file(db, user_id, report_id)
     append_audit(db, actor, action="farmer.report_download", target_type="farmer", target_id=user_id,
-                 summary=f"Downloaded a farmer's financial report ({report_id[:8].upper()})")
+                 summary=f"Downloaded the statement attached to a loan application ({report_id[:8].upper()})")
     db.commit()
     return data, name

@@ -22,6 +22,12 @@ from sqlalchemy.engine import make_url
 from app.config import get_settings
 
 KEEPALIVE_SECONDS = 15
+# Open streams one API worker holds: in all, and from one visitor's address (a few tabs and
+# devices behind one connection are normal; thousands are an attack on the server's sockets).
+MAX_STREAMS = 2000
+MAX_STREAMS_PER_CLIENT = 12
+# A refused stream asks the browser to try again only after this long.
+BUSY_RETRY_MS = 60_000
 CHANNEL = "agrictec_events"
 
 log = logging.getLogger("agrictec.events")
@@ -54,6 +60,7 @@ class _Subscriber:
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: set[_Subscriber] = set()
+        self._per_client: dict[str, int] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._publisher = None
         self._publish_lock = threading.Lock()
@@ -133,9 +140,17 @@ class EventBus:
 
     # ---------- streams ----------
 
-    async def stream(self, *, user_id: str | None, admin: bool) -> AsyncIterator[str]:
+    def open_streams(self, client: str | None = None) -> int:
+        return len(self._subscribers) if client is None else self._per_client.get(client, 0)
+
+    async def stream(self, *, user_id: str | None, admin: bool, client: str = "unknown") -> AsyncIterator[str]:
+        # Counted here, once the stream really starts, so the count always comes back down.
+        if len(self._subscribers) >= MAX_STREAMS or self._per_client.get(client, 0) >= MAX_STREAMS_PER_CLIENT:
+            yield f"retry: {BUSY_RETRY_MS}\n: busy\n\n"
+            return
         sub = _Subscriber(asyncio.Queue(maxsize=100), user_id, admin)
         self._subscribers.add(sub)
+        self._per_client[client] = self._per_client.get(client, 0) + 1
         try:
             yield ": connected\n\n"
             while True:
@@ -146,6 +161,11 @@ class EventBus:
                     yield ": keepalive\n\n"
         finally:
             self._subscribers.discard(sub)
+            left = self._per_client.get(client, 1) - 1
+            if left > 0:
+                self._per_client[client] = left
+            else:
+                self._per_client.pop(client, None)
 
 
 bus = EventBus()

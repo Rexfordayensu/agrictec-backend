@@ -16,16 +16,17 @@ from starlette.concurrency import run_in_threadpool
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.events import bus
-from app.core.ratelimit import rate_limit
+from app.core.ratelimit import client_ip, rate_limit
 from app.core.sessions import ADMIN_COOKIE, FARMER_COOKIE, bearer_token, find_session
 from app.db import SessionLocal, get_db
 from app.domain.clock import iso, now_utc
 from app.domain.market import published_prices
 from app.integrations import paystack
 from app.integrations import weather as weather_api
+from app.models import Admin
 from app.schemas.platform import CreditConfig, FeatureFlags, Lender, Plan
 from app.schemas.products import LoanProduct
-from app.services import account, lending, loan_products, platform_store, subscriptions
+from app.services import account, admin_auth, lending, loan_products, platform_store, subscriptions
 
 router = APIRouter(tags=["Platform"])
 
@@ -293,14 +294,18 @@ def reverse_place(
 # ---------- Live updates ----------
 
 
-@router.get("/events")
+@router.get("/events", dependencies=[Depends(rate_limit("events", 60, 60))])
 def events(request: Request, db: Database):
     """Server-Sent Events: {"topic": "platform"} when the console changes something farmers see,
-    {"topic": "account"} when an admin acts on the signed-in farmer. Admins hear every topic."""
+    {"topic": "account"} when an admin acts on the signed-in farmer. Admins hear every topic.
+    Open streams are capped per visitor and per worker (a busy stream says when to retry)."""
     now = now_utc()
-    admin = find_session(db, request.cookies.get(ADMIN_COOKIE), ("admin",), now)
+    admin_session = find_session(db, request.cookies.get(ADMIN_COOKIE), ("admin",), now)
+    staff = db.get(Admin, admin_session.admin_id) if admin_session and admin_session.admin_id else None
+    # Only an active admin whose console isn't idle hears every topic.
+    admin = staff is not None and staff.status == "active" and not admin_auth.is_idle(admin_session, now)
     farmer = find_session(db, request.cookies.get(FARMER_COOKIE) or bearer_token(request), ("farmer",), now)
-    stream = bus.stream(user_id=farmer.user_id if farmer else None, admin=admin is not None)
+    stream = bus.stream(user_id=farmer.user_id if farmer else None, admin=admin, client=client_ip(request))
     db.close()
     # no-transform: proxies that compress (Next.js, nginx) would otherwise hold events back in
     # their gzip buffer. X-Accel-Buffering: no does the same for nginx's own buffering.

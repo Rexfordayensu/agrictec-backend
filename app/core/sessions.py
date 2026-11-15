@@ -45,6 +45,17 @@ def create_session(
     return token, record
 
 
+# Browsers sign in with the httpOnly cookie alone. Other clients (scripts, a future mobile app)
+# send this header to get the session token in the sign-in answer, then use it as a Bearer token.
+TOKEN_CLIENT_HEADER = "x-agrictec-client"
+
+
+def token_in_body(request: Request) -> bool:
+    """The token goes in the sign-in answer only when the client asks for it: page scripts never
+    see it, so an injected script can't read a session out of a sign-in response."""
+    return request.headers.get(TOKEN_CLIENT_HEADER, "").strip().lower() == "api"
+
+
 def bearer_token(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
@@ -65,13 +76,18 @@ def end_session(record: AuthSession, now: datetime | None = None) -> None:
     record.ended_at = now or now_utc()
 
 
-def end_sessions_for(db: DB, *, user_id: str | None = None, admin_id: str | None = None) -> None:
-    """Signs a farmer (or an admin) out everywhere, e.g. after a suspension or a password reset."""
+def end_sessions_for(
+    db: DB, *, user_id: str | None = None, admin_id: str | None = None, keep: str | None = None
+) -> None:
+    """Signs a farmer (or an admin) out everywhere, e.g. after a suspension or a password reset.
+    `keep` is a session (its stored ID) that stays signed in: the one making the change."""
     query = update(AuthSession).where(AuthSession.ended_at.is_(None))
     if user_id:
         query = query.where(AuthSession.user_id == user_id)
     if admin_id:
         query = query.where(AuthSession.admin_id == admin_id)
+    if keep:
+        query = query.where(AuthSession.id != keep)
     db.execute(query.values(ended_at=now_utc()))
 
 

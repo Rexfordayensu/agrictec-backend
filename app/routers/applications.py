@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import Field
 
-from app.core.deps import AdminContext, FarmerContext, farmer_context, require, writable_farmer
+from app.core.deps import AdminContext, FarmerContext, farmer_context, private_farmer, require, writable_farmer
 from app.core.ratelimit import rate_limit
 from app.db import get_db
 from app.routers.transactions import attachment
@@ -21,6 +21,8 @@ admin_router = APIRouter(prefix="/admin/applications", tags=["Admin applications
 
 Reader = Annotated[FarmerContext, Depends(farmer_context)]
 Writer = Annotated[FarmerContext, Depends(writable_farmer)]
+# The farmer themselves only (not an admin viewing as them): documents and statements.
+Private = Annotated[FarmerContext, Depends(private_farmer)]
 Database = Annotated[DB, Depends(get_db)]
 MAX_UPLOAD = 6 * 1024 * 1024
 
@@ -107,13 +109,13 @@ def remove(app_id: str, document_id: str, ctx: Writer, db: Database):
 
 
 @farmer_router.get("/{app_id}/documents/{document_id}/file")
-def my_document(app_id: str, document_id: str, ctx: Reader, db: Database):
+def my_document(app_id: str, document_id: str, ctx: Private, db: Database):
     data, content_type, name = apps.own_document(db, ctx.user.id, app_id, document_id)
     return attachment((name, data, content_type))
 
 
 @farmer_router.get("/{app_id}/pack")
-def my_pack(app_id: str, ctx: Reader, db: Database):
+def my_pack(app_id: str, ctx: Private, db: Database):
     app = apps.get(db, ctx.user.id, app_id)
     return attachment((f"{app['reference']}-application.pdf", apps.own_pack(db, ctx.user.id, app_id), "application/pdf"))
 
@@ -169,7 +171,7 @@ def admin_statement(app_id: str, ctx: allowed("loans.view"), db: Database):
         from app.core.errors import NotFound
 
         raise NotFound("No statement attached.")
-    data, name = financial_reports.admin_file(db, ctx.admin, app["userId"], app["statementReportId"])
+    data, name = financial_reports.application_statement(db, ctx.admin, app["userId"], app["statementReportId"])
     return attachment((name, data, "application/pdf"))
 
 

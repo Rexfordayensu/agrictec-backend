@@ -15,6 +15,7 @@ import anthropic
 from PIL import Image, UnidentifiedImageError
 
 from app.config import get_settings
+from app.domain.images import ImageTooLarge, open_checked
 
 log = logging.getLogger("agrictec.claude")
 
@@ -209,9 +210,11 @@ def prepare_photo(content: bytes, content_type: str | None) -> Photo:
     if content_type not in PHOTO_TYPES:
         raise ValueError("Use a JPEG, PNG or WebP photo for the crop doctor.")
     try:
-        image = Image.open(io.BytesIO(content))
+        image = open_checked(content, longest_side=MAX_EDGE)
         image.load()
-    except (UnidentifiedImageError, OSError) as error:
+    except ImageTooLarge:
+        raise
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
         raise ValueError("That file couldn't be read as a photo.") from error
     image = image.convert("RGB")
     image.thumbnail((MAX_EDGE, MAX_EDGE))

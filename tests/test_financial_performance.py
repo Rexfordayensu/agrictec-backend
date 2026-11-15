@@ -125,16 +125,22 @@ def test_the_summary_endpoint_is_private_and_exact():
     assert ama.get(f"{API}/me/financial-summary", params={"months": 5}).status_code == 422
 
 
-def test_admins_see_a_farmers_summary_only_with_permission_and_audited():
+def test_the_console_never_receives_a_farmers_amounts():
+    """A farmer's money is confidential: the console sees counts, never amounts (an entry's
+    amount is shown only in Transactions review, while it is checked)."""
     ama = onboarded()
     add_sale(ama)
     user_id = ama.get(f"{API}/auth/session").json()["userId"]
     boss = super_admin()
-    r = boss.get(f"{API}/admin/farmers/{user_id}/financial-summary", params={"months": 12})
-    assert r.status_code == 200 and r.json()["farm"]["income"]["total"] == "1200.50"
-    with SessionLocal() as db:
-        n = db.execute(text("select count(*) from audit_log where action = 'farmer.financial_summary'")).scalar()
-    assert n == 1
+    assert boss.get(f"{API}/admin/farmers/{user_id}/financial-summary", params={"months": 12}).status_code in (404, 405)
+    page = boss.get(f"{API}/admin/farmers/page").json()
+    one = boss.get(f"{API}/admin/farmers/{user_id}").json()
+    detail = boss.get(f"{API}/admin/farmers/{user_id}/detail").json()
+    for stats in (page["items"][0]["stats"], one["stats"], detail["account"]["stats"]):
+        assert stats["records"] == 1 and "income" not in stats and "expenses" not in stats
+    assert boss.get(f"{API}/admin/farmers/page", params={"sort": "income"}).status_code == 422
+    header = boss.post(f"{API}/admin/farmers/export", json={}).text.splitlines()[0]
+    assert "Income" not in header and "Expenses" not in header and "Net" not in header
 
 
 def test_the_score_is_explained_and_no_longer_a_loan_gate():
@@ -173,17 +179,17 @@ def test_reports_are_generated_from_the_database_and_kept_private():
     assert snapshot["farm"]["income"]["total"] == "1200.50"
 
 
-def test_admin_downloads_are_audited_and_deleting_removes_the_file():
+def test_admins_cant_open_a_farmers_statements_and_deleting_removes_the_file():
     ama = onboarded()
     add_sale(ama)
     user_id = ama.get(f"{API}/auth/session").json()["userId"]
     report = ama.post(f"{API}/me/reports/financial", json={"months": 3}).json()
     boss = super_admin()
     analyst = admin_with_role(boss, "analyst")
-    assert analyst.get(f"{API}/admin/farmers/{user_id}/reports").status_code == 200
-    assert boss.get(f"{API}/admin/farmers/{user_id}/reports/{report['id']}/file").content.startswith(b"%PDF")
+    # A farmer's statements are theirs: the console can't list or download them.
+    assert analyst.get(f"{API}/admin/farmers/{user_id}/reports").status_code in (404, 405)
+    assert boss.get(f"{API}/admin/farmers/{user_id}/reports/{report['id']}/file").status_code in (404, 405)
     with SessionLocal() as db:
-        assert db.execute(text("select count(*) from audit_log where action = 'farmer.report_download'")).scalar() == 1
         assert db.execute(text("select count(*) from stored_files where key like 'reports/%'")).scalar() == 1
     assert ama.delete(f"{API}/me/reports/financial/{report['id']}").status_code == 204
     with SessionLocal() as db:

@@ -38,9 +38,10 @@ class Session(CamelModel):
 
 class SignedIn(CamelModel):
     session: Session
-    # The same opaque token as the httpOnly cookie, for non-browser clients
-    # (send it as "Authorization: Bearer <token>"). Browsers should rely on the cookie.
-    token: str
+    # The same opaque token as the httpOnly cookie, only for clients that ask for it with
+    # "X-AgriCtec-Client: api" (then send it as "Authorization: Bearer <token>"). Browsers get
+    # the cookie alone.
+    token: str | None = None
 
 
 class Credentials(CamelModel):

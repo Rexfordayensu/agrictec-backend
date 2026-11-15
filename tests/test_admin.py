@@ -28,7 +28,7 @@ def farmer_id(c) -> str:
 @pytest.mark.parametrize(
     ("role", "allowed", "refused"),
     [
-        ("analyst", ["/admin/overview", "/admin/farmers", "/admin/loan-applications", "/admin/reports"],
+        ("analyst", ["/admin/overview", "/admin/farmers/page", "/admin/loan-applications", "/admin/reports"],
          ["/admin/verifications", "/admin/audit", "/admin/team", "/admin/risk/flags", "/admin/content/crops"]),
         ("support", ["/admin/verifications", "/admin/risk/flags"], ["/admin/audit", "/admin/reports", "/admin/lenders"]),
         ("admin", ["/admin/audit", "/admin/lenders", "/admin/content/crops", "/admin/announcements"],
@@ -180,9 +180,18 @@ def test_view_as_farmer_is_read_only_and_audited(db):
     claimed = boss.post(f"{API}/auth/impersonation/claim", json={"token": start["token"]})
     assert claimed.status_code == 200 and claimed.json()["session"]["readOnly"] is True
     view = {"X-Impersonation-Token": claimed.json()["token"]}
-    assert len(boss.get(f"{API}/me/records", headers=view).json()) == 1
+    assert boss.get(f"{API}/me/profile", headers=view).status_code == 200
+    assert boss.get(f"{API}/me/credit", headers=view).status_code == 200
+    # A farmer's money, statements and conversations stay private while viewing as them.
+    for path in ("/me/records", "/me/momo", "/me/momo/summary", "/me/momo/statement", "/me/financial-summary",
+                 "/me/reports/financial", "/me/loan-assessments", "/me/chat", "/me/export",
+                 "/me/transactions", "/me/transactions/summary"):
+        hidden = boss.get(f"{API}{path}", headers=view)
+        assert hidden.status_code == 403 and hidden.json()["code"] == "private_while_viewing", path
     r = boss.post(f"{API}/me/records", headers=view, json={"type": "activity", "description": "x", "crop": "Maize", "date": "2026-10-03"})
     assert r.status_code == 403 and r.json()["detail"] == "Read-only while viewing as farmer"
+    # The farmer still sees all of it.
+    assert len(farmer.get(f"{API}/me/records").json()) == 1
     # Single use.
     assert boss.post(f"{API}/auth/impersonation/claim", json={"token": start["token"]}).status_code == 400
     boss.post(f"{API}/auth/impersonation/end", headers=view)
@@ -194,7 +203,7 @@ def test_view_as_farmer_is_read_only_and_audited(db):
 def test_deleting_a_farmer_keeps_their_loan_history(db):
     boss = super_admin()
     boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": ADMIN_PASSWORD})
-    someone = boss.get(f"{API}/admin/farmers").json()[0]
+    someone = boss.get(f"{API}/admin/farmers/page").json()["items"][0]
     recorded_application(someone["userId"], published_lender(boss)["id"])
     app = boss.get(f"{API}/admin/loan-applications").json()[0]
     farmer = boss.get(f"{API}/admin/farmers/{app['userId']}").json()
@@ -243,14 +252,14 @@ def test_reports_risk_and_backup_round_trip():
     tampered = {**backup, "ciphertext": first + backup["ciphertext"][1:]}
     assert boss.post(f"{API}/admin/system/backup/summary", json={"backup": tampered, "passphrase": secret}).status_code == 400
     boss.post(f"{API}/admin/system/delete-farmers", json={"confirmation": "DELETE ALL FARMERS", "password": "Sup3r$ecret!"})
-    assert boss.get(f"{API}/admin/farmers").json() == []
+    assert boss.get(f"{API}/admin/farmers/page").json()["items"] == []
     assert boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "nope", "password": ADMIN_PASSWORD}).status_code == 400
     # A restore replaces everything: the phrase alone is not enough.
     assert boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "RESTORE"}).status_code == 400
     assert boss.post(f"{API}/admin/system/reset-demo", json={"confirmation": "RESET", "password": "wrong"}).status_code == 400
     restored = boss.post(f"{API}/admin/system/restore", json={"backup": backup, "passphrase": secret, "confirmation": "RESTORE", "password": ADMIN_PASSWORD})
     assert restored.status_code == 200, restored.text
-    assert len(boss.get(f"{API}/admin/farmers").json()) == 60
+    assert boss.get(f"{API}/admin/farmers/page").json()["total"] == 60
     # Restored accounts keep the password they have on this server (none here, until a reset).
     r = new_client().post(f"{API}/auth/login", json={"email": inside["data"]["users"][0]["email"], "password": "Farmer@2026"})
     assert r.status_code == 401
@@ -277,10 +286,17 @@ def test_the_farmers_list_is_searched_filtered_sorted_and_paged_on_the_server():
     # Announcements count their reach from regions and crops only: no names or contacts.
     audience = boss.get(f"{API}/admin/announcements/audience").json()
     assert len(audience) == 60 and set(audience[0]) == {"region", "primaryCrops"}
-    # The credit simulator fetches one farmer at a time; the impact is worked out on the server.
-    one = boss.get(f"{API}/admin/credit-config/scoring-inputs/{ids[0]}").json()
-    assert one["userId"] == ids[0] and "records" in one
-    assert boss.get(f"{API}/admin/credit-config/scoring-inputs/nobody").status_code == 404
+    # The credit simulator scores one farmer on the server: their entries never leave it.
+    live = boss.get(f"{API}/platform").json()["creditConfig"]
+    draft = {k: live[k] for k in ("weights", "targets", "bands", "eligibility")}
+    one = boss.post(f"{API}/admin/credit-config/simulate/{ids[0]}", json={"draft": draft})
+    assert one.status_code == 200, one.text
+    assert one.json()["userId"] == ids[0] and one.json()["live"]["score"] == one.json()["draft"]["score"]
+    # Counts only: never the entries themselves.
+    assert all(isinstance(one.json()[k], int) for k in ("records", "momo", "verified"))
+    assert boss.post(f"{API}/admin/credit-config/simulate/nobody", json={"draft": draft}).status_code == 404
+    assert boss.get(f"{API}/admin/credit-config/scoring-inputs").status_code in (404, 405)
+    assert boss.get(f"{API}/admin/credit-config/scoring-inputs/{ids[0]}").status_code in (404, 405)
     overview = boss.get(f"{API}/admin/overview", params={"range": "12m"}).json()
     assert overview["kpis"]["totalFarmers"] == 60 and overview["cropGrowers"] > 0
     # A farmer can't use any of this (checked last: signing up adds a farmer).

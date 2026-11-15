@@ -81,18 +81,15 @@ def _check_password(db: DB, email: str, password: str, client: str) -> User | No
     """The user when the password is right. Five wrong ones in a row from one address lock that
     email there for five minutes (423 with when it ends); a wrong one says only that it's wrong."""
     now = now_utc()
-    key = login_lockout.lockout_key(email, client, scope="farmer")
-    lock = login_lockout.lock_status(db, key, now)
-    if lock.locked and lock.until:
-        raise login_lockout.locked_error(lock.until, now)
+    keys = login_lockout.check(db, email, client, "farmer", now)
     user = _find(db, email)
     if not verify_password(password, user.password_hash if user else None) or not user:
-        after = login_lockout.fail_attempt(db, key, now)
+        after = login_lockout.failed(db, keys, now)
         db.commit()
         if after.locked and after.until:
             raise login_lockout.locked_error(after.until, now)
         raise Unauthorized(BAD_CREDENTIALS, code="bad_credentials")
-    login_lockout.clear(db, key)
+    login_lockout.succeeded(db, keys)
     return user
 
 

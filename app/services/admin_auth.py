@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.core.audit import append_audit
 from app.core.errors import SESSION_ENDED, AppError, Forbidden, Unauthorized
 from app.core.security import hash_password, verify_password
-from app.core.sessions import create_session, end_session
+from app.core.sessions import create_session, end_session, end_sessions_for
 from app.domain.clock import now_utc
 from app.domain.passwords import password_problem
 from app.domain.permissions import permissions_of
@@ -51,14 +51,11 @@ def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple
     reveals which accounts exist. `client` is the visitor's address (the lockout's other half)."""
     now = now_utc()
     address = email.strip().lower()
-    key = login_lockout.lockout_key(address, client)
-    lock = login_lockout.lock_status(db, key, now)
-    if lock.locked and lock.until:
-        raise login_lockout.locked_error(lock.until, now)
+    keys = login_lockout.check(db, address, client, "admin", now)
 
     admin = db.scalars(select(Admin).where(Admin.email == address)).first()
     if not verify_password(password, admin.password_hash if admin else None) or not admin:
-        after = login_lockout.fail_attempt(db, key, now)
+        after = login_lockout.failed(db, keys, now)
         db.commit()
         if after.locked and after.until:
             raise login_lockout.locked_error(after.until, now)
@@ -67,7 +64,7 @@ def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple
     if admin.status != "active":
         raise Forbidden("This admin account is disabled.", code="admin_disabled")
 
-    login_lockout.clear(db, key)
+    login_lockout.succeeded(db, keys)
     admin.last_login_at = now
     token, record = create_session(
         db, "admin", admin_id=admin.id, ttl=timedelta(hours=get_settings().admin_session_hours)
@@ -94,8 +91,10 @@ def touch(db: DB, record: AuthSession) -> datetime:
     return record.last_activity_at
 
 
-def change_password(db: DB, admin: Admin, current: str, new: str) -> Admin:
-    """Also clears a forced change (must_change_password)."""
+def change_password(db: DB, admin: Admin, current: str, new: str, *, keep_session: str | None = None) -> Admin:
+    """Also clears a forced change (must_change_password). Every other session of this admin
+    ends (and any read-only farmer view they opened), so a stolen password stops working at once;
+    the session making the change (`keep_session`) stays signed in."""
     if not verify_password(current, admin.password_hash):
         raise AppError("Your current password is incorrect.")
     problem = password_problem(new)
@@ -105,6 +104,7 @@ def change_password(db: DB, admin: Admin, current: str, new: str) -> Admin:
         raise AppError("Choose a password different from your current one.")
     admin.password_hash = hash_password(new)
     admin.must_change_password = False
+    end_sessions_for(db, admin_id=admin.id, keep=keep_session)
     append_audit(
         db, admin, action="admin.password_change", target_type="admin", target_id=admin.id,
         summary=f"{admin.name} changed their password",
