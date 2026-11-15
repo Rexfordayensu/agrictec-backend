@@ -329,5 +329,5 @@ def test_the_statement_pdf_lists_each_entry_with_when_it_was_recorded():
             text += zlib.decompress(stream)
         except zlib.error:
             pass
-    # The column header wraps ("Recorded" / "(GMT)"), so its words are checked separately.
-    assert b"(Recorded)" in text and b"GMT" in text and b"Maize sale" in text
+    # Each entry says when it was recorded in AgriCtec, under its description.
+    assert b"Recorded " in text and b"GMT" in text and b"Maize sale" in text
