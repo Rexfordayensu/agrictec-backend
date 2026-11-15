@@ -38,5 +38,9 @@ class Locked(AppError):
 
 
 SESSION_ENDED = "Your session has ended. Sign in again."
+PRIVATE_WHILE_VIEWING = (
+    "A farmer's money, statements and conversations are private: they aren't shown while viewing "
+    "as the farmer. Entries are checked one at a time in Transactions review."
+)
 READ_ONLY_MESSAGE = "Read-only while viewing as farmer"
 SUSPENDED_MESSAGE = "Your account is suspended. Contact support."

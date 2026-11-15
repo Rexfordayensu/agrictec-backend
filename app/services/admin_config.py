@@ -9,6 +9,7 @@ from app.core.errors import AppError, NotFound
 from app.core.events import bus
 from app.domain.assistant import AssistantContext, matched_keyword, resolve_reply
 from app.domain.clock import now_utc, today
+from app.domain.credit import calculate_credit_score
 from app.domain.credit_rules import ScoringInput, impact_of
 from app.domain.defaults import ASSISTANT_FALLBACK_ID
 from app.domain.market import publication_error, published_prices
@@ -138,6 +139,32 @@ def impact(db: DB, draft: dict) -> dict:
     except ValidationError as error:
         raise AppError(error.errors()[0]["msg"].removeprefix("Value error, ")) from error
     return impact_of(scoring_inputs(db), store.credit_config(db), values)
+
+
+def simulate(db: DB, user_id: str, draft: dict) -> dict:
+    """One farmer's score breakdown under the live rules and a draft. Only the breakdowns leave
+    the server: never the farmer's entries or amounts. Nothing is saved."""
+    try:
+        values = CreditConfigInput.model_validate(draft)
+    except ValidationError as error:
+        raise AppError(error.errors()[0]["msg"].removeprefix("Value error, ")) from error
+    found = scoring_inputs(db, [user_id])
+    if not found:
+        raise NotFound("Farmer not found.")
+    i = found[0]
+    live = calculate_credit_score(i.records, i.momo, i.profile, store.credit_config(db))
+    then = calculate_credit_score(i.records, i.momo, i.profile, values)
+    return {
+        "userId": i.user_id,
+        "name": i.name,
+        "region": i.region,
+        # Counts only.
+        "records": len(i.records),
+        "momo": len(i.momo),
+        "verified": sum(1 for e in (*i.records, *i.momo) if e.verification_status == "verified"),
+        "live": live.model_dump(mode="json", by_alias=True),
+        "draft": then.model_dump(mode="json", by_alias=True),
+    }
 
 
 # ---------- Flags and plans ----------

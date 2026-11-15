@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
 from app.core.errors import (
+    PRIVATE_WHILE_VIEWING,
     READ_ONLY_MESSAGE,
     SESSION_ENDED,
     SUSPENDED_MESSAGE,
@@ -116,6 +117,14 @@ def farmer_context(request: Request, db: DB = Depends(get_db)) -> FarmerContext:
 def writable_farmer(ctx: FarmerContext = Depends(farmer_context)) -> FarmerContext:
     if ctx.read_only:
         raise Forbidden(READ_ONLY_MESSAGE, code="read_only")
+    return ctx
+
+
+def private_farmer(ctx: FarmerContext = Depends(farmer_context)) -> FarmerContext:
+    """The farmer themselves only: never an admin viewing as them. For the farmer's records,
+    MoMo, amounts, statements, documents and assistant conversation."""
+    if ctx.read_only:
+        raise Forbidden(PRIVATE_WHILE_VIEWING, code="private_while_viewing")
     return ctx
 
 

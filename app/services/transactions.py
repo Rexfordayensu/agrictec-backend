@@ -10,21 +10,28 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import delete, func, literal, select, text, union_all
 from sqlalchemy.orm import Session as DB
 
-from app.core.audit import append_audit
 from app.config import get_settings
+from app.core.audit import append_audit
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.core.events import bus
 from app.domain.clock import add_months, iso, month_start, now_utc, today
+from app.domain.images import ImageTooLarge, open_checked
 from app.domain.transactions import MATERIAL_FIELDS, STATUSES, transition, validate_fields
 from app.integrations.storage import store
 from app.models import (
     FarmRecord,
     MomoTransaction,
     Profile,
-    TransactionEvidence as Evidence,
-    TransactionEvidenceLink as Link,
-    TransactionVerification as History,
     new_id,
+)
+from app.models import (
+    TransactionEvidence as Evidence,
+)
+from app.models import (
+    TransactionEvidenceLink as Link,
+)
+from app.models import (
+    TransactionVerification as History,
 )
 from app.services import mappers, notifications
 
@@ -267,6 +274,10 @@ def summary(db, user_id, months):
     }
 
 
+# Evidence photos are kept at most this many pixels on their longest side.
+EVIDENCE_MAX_SIDE = 4096
+
+
 def clean_file(data: bytes):
     if not data or len(data) > MAX_BYTES:
         raise AppError("Choose a non-empty file no larger than 5 MB.")
@@ -280,14 +291,18 @@ def clean_file(data: bytes):
     if not any(headers):
         raise AppError("Only PDF, JPEG, PNG and WebP evidence is accepted.")
     try:
-        with Image.open(io.BytesIO(data)) as probe:
+        with open_checked(data) as probe:
             probe.verify()
-        with Image.open(io.BytesIO(data)) as image:
+        with open_checked(data, longest_side=EVIDENCE_MAX_SIDE) as image:
             image.load()
+            # A receipt reads well at this size; larger photos are scaled down.
+            image.thumbnail((EVIDENCE_MAX_SIDE, EVIDENCE_MAX_SIDE))
             out = io.BytesIO()
             image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(out, format="WEBP", quality=90)
             cleaned = out.getvalue()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+    except ImageTooLarge as error:
+        raise AppError(str(error)) from None
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
         raise AppError("This is not a readable evidence image.") from None
     if len(cleaned) > MAX_BYTES:
         raise AppError("The processed image exceeds 5 MB. Choose a smaller image.")

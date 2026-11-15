@@ -14,9 +14,8 @@ from app.routers.common import file_response
 from app.schemas import admin as a
 from app.schemas.base import Message
 from app.schemas.farm import VerificationRequest
-from app.routers.transactions import attachment
 from app.schemas.base import CamelModel
-from app.services import admin_farmers, financial_reports, financial_summary, insights, risk, team, verifications
+from app.services import admin_farmers, insights, risk, team, verifications
 from app.services import ghana_card_verification as identity
 
 router = APIRouter(prefix="/admin")
@@ -87,19 +86,6 @@ def roles(ctx: Annotated[AdminContext, Depends(admin_context)]):
 # ---------- Farmers ----------
 
 
-@router.get("/farmers", response_model=list[a.FarmerAccount], tags=["Admin farmers"])
-def list_farmers(
-    ctx: allowed("farmers.view"),
-    db: Database,
-    search: str | None = None,
-    region: str | None = None,
-    status: Literal["active", "suspended", "pending_verification"] | None = None,
-    tag: str | None = None,
-    include_guests: Annotated[bool, Query(alias="includeGuests")] = True,
-):
-    return admin_farmers.list_farmers(db, search=search, region=region, status=status, tag=tag, include_guests=include_guests)
-
-
 @router.get("/farmers/page", tags=["Admin farmers"])
 def farmers_page(
     ctx: allowed("farmers.view"),
@@ -115,7 +101,7 @@ def farmers_page(
     records: Literal["yes", "no"] | None = None,
     tag: Annotated[str | None, Query(max_length=40)] = None,
     active: Annotated[str | None, Query(pattern=r"^\d{1,4}$")] = None,
-    sort: Literal["farmer", "region", "crops", "score", "records", "income", "verified", "status", "joined"] = "joined",
+    sort: Literal["farmer", "region", "crops", "score", "records", "verified", "status", "joined"] = "joined",
     direction: Annotated[Literal["asc", "desc"] | None, Query(alias="dir")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(alias="pageSize", ge=1, le=admin_farmers.PAGE_SIZE_MAX)] = 25,
@@ -146,26 +132,6 @@ def export_farmers(body: a.IdList, ctx: allowed("reports.export"), db: Database)
 @router.get("/farmers/{user_id}", response_model=a.FarmerAccount, tags=["Admin farmers"])
 def get_farmer(user_id: str, ctx: allowed("farmers.view"), db: Database):
     return admin_farmers.get_farmer(db, user_id)
-
-
-@router.get("/farmers/{user_id}/financial-summary", tags=["Admin farmers"])
-def farmer_financial_summary(
-    user_id: str, ctx: allowed("farmers.view"), db: Database, months: Literal["3", "6", "12"] = "6"
-):
-    """The same figures the farmer sees. Each look is audited."""
-    return financial_summary.for_admin(db, ctx.admin, user_id, int(months))
-
-
-@router.get("/farmers/{user_id}/reports", tags=["Admin farmers"])
-def farmer_reports(user_id: str, ctx: allowed("farmers.view"), db: Database):
-    return financial_reports.admin_list(db, user_id)
-
-
-@router.get("/farmers/{user_id}/reports/{report_id}/file", tags=["Admin farmers"])
-def farmer_report_file(user_id: str, report_id: str, ctx: allowed("farmers.view"), db: Database):
-    """Each download is audited."""
-    data, name = financial_reports.admin_file(db, ctx.admin, user_id, report_id)
-    return attachment((name, data, "application/pdf"))
 
 
 @router.get("/farmers/{user_id}/detail", response_model=a.FarmerDetail, tags=["Admin farmers"])
@@ -211,11 +177,6 @@ def set_tags(user_id: str, body: a.TagsInput, ctx: allowed("farmers.edit"), db: 
 def reset_password(user_id: str, ctx: allowed("farmers.edit"), db: Database):
     """A one-time password, shown once and never logged."""
     return a.TemporaryPassword(temporary_password=admin_farmers.reset_password(db, ctx.admin, user_id))
-
-
-@router.get("/farmers/{user_id}/records.csv", tags=["Admin farmers"])
-def export_records(user_id: str, ctx: allowed("reports.export"), db: Database):
-    return file_response(admin_farmers.export_records_csv(db, ctx.admin, user_id), f"AgriCtec_Records_{user_id}.csv")
 
 
 @router.post("/farmers/{user_id}/impersonate", response_model=a.ImpersonationStart, tags=["View as farmer"])

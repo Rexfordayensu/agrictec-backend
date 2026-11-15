@@ -32,8 +32,16 @@ def test_duplicate_email_and_short_password():
 
 
 def test_bearer_token_works_without_cookies():
-    r = new_client().post(f"{API}/auth/signup", json={"email": "api@example.com", "password": "password123"})
+    # Browsers never get the token in the answer (the httpOnly cookie is enough)...
+    browser = new_client().post(f"{API}/auth/signup", json={"email": "web@example.com", "password": "password123"})
+    assert browser.status_code == 201 and browser.json()["token"] is None
+    admin = new_client().post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert admin.json()["token"] is None
+    # ...an API client asks for it.
+    r = new_client().post(f"{API}/auth/signup", json={"email": "api@example.com", "password": "password123"},
+                          headers={"X-AgriCtec-Client": "api"})
     token = r.json()["token"]
+    assert token
     bare = new_client()
     assert bare.get(f"{API}/auth/session", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
@@ -56,12 +64,12 @@ def test_admin_must_change_the_demo_password_first():
     c = new_client()
     r = c.post(f"{API}/admin/auth/login", json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
     assert r.json()["session"]["admin"]["mustChangePassword"] is True
-    blocked = c.get(f"{API}/admin/farmers")
+    blocked = c.get(f"{API}/admin/farmers/page")
     assert blocked.status_code == 403 and blocked.json()["code"] == "password_change_required"
     weak = c.post(f"{API}/admin/auth/change-password", json={"currentPassword": "Admin@2026", "newPassword": "weakpassword"})
     assert weak.status_code == 400 and "uppercase" in weak.json()["detail"]
     assert c.post(f"{API}/admin/auth/change-password", json={"currentPassword": "Admin@2026", "newPassword": ADMIN_PASSWORD}).status_code == 200
-    assert c.get(f"{API}/admin/farmers").status_code == 200
+    assert c.get(f"{API}/admin/farmers/page").status_code == 200
 
 
 def test_admin_lockout_after_five_failures():

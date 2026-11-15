@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session as DB
 from app.core.deps import AdminContext, FarmerContext, admin_context, farmer_context
 from app.core.errors import AppError
 from app.core.ratelimit import client_ip, rate_limit
-from app.core.sessions import IMPERSONATION_HEADER, end_session, find_session
+from app.core.sessions import IMPERSONATION_HEADER, end_session, find_session, token_in_body
 from app.db import get_db
 from app.domain.clock import now_utc
 from app.models import Admin, Profile, User
@@ -31,15 +31,15 @@ def _onboarded(db: DB, user_id: str) -> bool:
     return bool(row and row.onboarding_completed_at)
 
 
-def _signed_in(db: DB, response: Response, token: str, session: Session) -> SignedIn:
+def _signed_in(db: DB, request: Request, response: Response, token: str, session: Session) -> SignedIn:
     set_farmer_cookies(response, token, _onboarded(db, session.user_id))
-    return SignedIn(session=session, token=token)
+    return SignedIn(session=session, token=token if token_in_body(request) else None)
 
 
 @router.post("/signup", response_model=SignedIn, status_code=201, dependencies=[Depends(rate_limit("signup", 10, 3600))])
-def sign_up(body: SignUp, response: Response, db: DB = Depends(get_db)):
+def sign_up(body: SignUp, request: Request, response: Response, db: DB = Depends(get_db)):
     token, session = auth.sign_up(db, body.email, body.password)
-    return _signed_in(db, response, token, session)
+    return _signed_in(db, request, response, token, session)
 
 
 @router.post("/login", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
@@ -48,7 +48,7 @@ def sign_in(body: Credentials, request: Request, response: Response, db: DB = De
     /auth/replace-temporary-password with the temporary and the new password. Five wrong passwords
     from one address lock that email there for five minutes (423, with `until`)."""
     token, session = auth.sign_in(db, body.email, body.password, client_ip(request))
-    return _signed_in(db, response, token, session)
+    return _signed_in(db, request, response, token, session)
 
 
 @router.post("/replace-temporary-password", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
@@ -58,7 +58,7 @@ def replace_temporary_password(
     token, session = auth.replace_temporary_password(
         db, body.email, body.temporary_password, body.new_password, client_ip(request)
     )
-    return _signed_in(db, response, token, session)
+    return _signed_in(db, request, response, token, session)
 
 
 @router.post("/password-reset/request", response_model=Message, dependencies=[Depends(rate_limit("reset-request", 5, 3600))])
@@ -70,10 +70,10 @@ def request_password_reset(body: PasswordResetRequest, db: DB = Depends(get_db))
 
 
 @router.post("/password-reset/confirm", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
-def confirm_password_reset(body: PasswordResetConfirm, response: Response, db: DB = Depends(get_db)):
+def confirm_password_reset(body: PasswordResetConfirm, request: Request, response: Response, db: DB = Depends(get_db)):
     """The code and a new password: every other session ends, and this one starts."""
     token, session = password_reset.confirm_reset(db, body.email, body.code, body.new_password)
-    return _signed_in(db, response, token, session)
+    return _signed_in(db, request, response, token, session)
 
 
 @router.post("/guest", include_in_schema=False)

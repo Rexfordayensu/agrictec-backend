@@ -25,7 +25,7 @@ from app.domain.passwords import farmer_password_problem
 from app.integrations import messaging
 from app.models import PasswordReset, Profile, User
 from app.schemas.farm import Session
-from app.services import auth, notifications
+from app.services import auth, login_lockout, notifications
 
 log = logging.getLogger("agrictec.password_reset")
 
@@ -66,9 +66,26 @@ def channels(db: DB, user: User) -> list[str]:
     return out
 
 
+RESET_UNAVAILABLE = (
+    "Password reset isn't available right now: AgriCtec can't send codes yet. "
+    "Contact AgriCtec support to get back into your account."
+)
+
+
+def can_send_codes() -> bool:
+    """Whether a reset code can reach anyone: email or SMS is set up (while developing, the
+    code is written to the API's log instead)."""
+    settings = get_settings()
+    return settings.email_enabled or settings.sms_enabled or settings.environment != "production"
+
+
 def request_reset(db: DB, email: str) -> None:
     """Sends a code when the email belongs to an active farmer account; silently does nothing
-    otherwise, so the answer can't be used to find out who has an account."""
+    otherwise, so the answer can't be used to find out who has an account. When no code can be
+    sent at all (no email or SMS set up), it says so to everyone: that reveals nothing about
+    accounts, and a farmer isn't left waiting for a code that never comes."""
+    if not can_send_codes():
+        raise AppError(RESET_UNAVAILABLE, code="reset_unavailable", status_code=503)
     user = auth._find(db, email)
     if not user or user.status == "suspended":
         return
@@ -141,6 +158,8 @@ def confirm_reset(db: DB, email: str, code: str, new_password: str) -> tuple[str
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
     end_sessions_for(db, user_id=user.id)
+    # The owner proved who they are: an account-wide sign-in lock (someone guessing) is lifted.
+    login_lockout.clear(db, login_lockout.account_key(user.email, "farmer"))
     notice = notifications.create(
         db, user.id, "account", "Your password was changed",
         "You chose a new password with a reset code. If this wasn't you, contact AgriCtec support straight away.",

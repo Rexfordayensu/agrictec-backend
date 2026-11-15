@@ -9,7 +9,6 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
-from PIL import Image
 
 from app.core.audit import append_audit
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
@@ -17,6 +16,7 @@ from app.core.events import bus
 from app.domain.clock import now_utc
 from app.domain.credit import calculate_credit_score
 from app.domain.csv import to_csv
+from app.domain.images import ImageTooLarge, open_checked
 from app.domain.lenders import IDENTITY_FIELDS, listing_blockers, publish_blockers
 from app.domain.loans import (
     LOAN_STATUS_LABELS,
@@ -25,11 +25,18 @@ from app.domain.loans import (
     eligibility_checks,
     status_change_error,
 )
+from app.integrations import storage
 from app.models import Admin, Lender, LoanApplication, LoanProduct, LoanStatusEvent, Profile, RiskFlag, User
 from app.schemas import farm as f
 from app.schemas.admin import LoanReview, StatusChange
-from app.integrations import storage
-from app.schemas.platform import AdminLender, LenderInput, LenderListing, LenderPatch, LenderSuspension, LenderVerification
+from app.schemas.platform import (
+    AdminLender,
+    LenderInput,
+    LenderListing,
+    LenderPatch,
+    LenderSuspension,
+    LenderVerification,
+)
 from app.schemas.platform import Lender as LenderOut
 from app.services import notifications, platform_store
 from app.services.farmer_data import load_farmer, load_farmers
@@ -286,14 +293,16 @@ def _clean_logo(data: bytes) -> bytes:
     if len(data) > LOGO_MAX_BYTES:
         raise AppError("The logo must be 2 MB or smaller.")
     try:
-        with Image.open(io.BytesIO(data)) as probe:
+        with open_checked(data) as probe:
             probe.verify()
-        image = Image.open(io.BytesIO(data))
+        image = open_checked(data, longest_side=LOGO_MAX_SIDE)
         if image.format not in LOGO_FORMATS:
             raise AppError("Upload the logo as a PNG, JPEG or WebP image.")
         image.load()
     except AppError:
         raise
+    except ImageTooLarge as error:
+        raise AppError(str(error)) from None
     except Exception:  # noqa: BLE001 - anything Pillow can't read is not an image
         raise AppError("That file is not a readable image.") from None
     image.thumbnail((LOGO_MAX_SIDE, LOGO_MAX_SIDE))

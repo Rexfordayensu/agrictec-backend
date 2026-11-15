@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
 
 from app.core.audit import append_audit
-from app.core.errors import AppError, Forbidden, NotFound
+from app.core.errors import AppError, NotFound
 from app.core.events import bus
 from app.core.security import hash_password, new_token, token_digest
 from app.core.sessions import IMPERSONATION_HOURS, create_session, end_sessions_for
@@ -231,11 +231,6 @@ def reset_password(db: DB, actor: Admin, user_id: str) -> str:
     return temporary
 
 
-def export_records_csv(db: DB, actor: Admin, user_id: str) -> str:
-    """Raw financial details are available only through the review queue."""
-    raise Forbidden("Financial entries can only be viewed in the transaction review queue.")
-
-
 def _yes_no(value: bool) -> str:
     return "Yes" if value else "No"
 
@@ -271,9 +266,6 @@ def export_csv(db: DB, actor: Admin, ids: list[str] | None) -> str:
             ("Records", lambda f: f.stats.records),
             ("MoMo transactions", lambda f: f.stats.momo),
             ("Diagnoses", lambda f: f.stats.diagnoses),
-            ("Income (GHS)", lambda f: f.stats.income),
-            ("Expenses (GHS)", lambda f: f.stats.expenses),
-            ("Net profit (GHS)", lambda f: f.stats.income - f.stats.expenses),
             ("Tags", lambda f: "; ".join(f.tags)),
             ("Joined", lambda f: f.created_at.isoformat()),
             ("Last active", lambda f: f.last_active_at.isoformat() if f.last_active_at else ""),
@@ -374,7 +366,6 @@ def _sort_value(f: a.FarmerAccount, key: str):
         "crops": ", ".join(f.profile.primary_crops),
         "score": f.stats.score,
         "records": f.stats.records,
-        "income": f.stats.income,
         "verified": sum(1 for x in (v.phone, v.location, v.ghana_card) if x),
         "status": _STATUS_ORDER.get(f.status, 9),
         "joined": f.created_at,

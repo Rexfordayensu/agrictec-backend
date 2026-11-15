@@ -42,7 +42,12 @@ async def lifespan(_: FastAPI):
             "FRONTEND_PROXY_SECRET is not set: rate limits cannot tell visitors apart behind Vercel. "
             "Set the same random value (32+ characters) on the API and the web app."
         )
-    elif settings.frontend_proxy_secret and len(settings.frontend_proxy_secret) < 32:
+    if settings.environment == "production" and not (settings.email_enabled or settings.sms_enabled):
+        logging.getLogger("agrictec").warning(
+            "Neither email (SMTP_HOST, SMTP_FROM) nor SMS (ARKESEL_API_KEY) is set up: farmers can't "
+            "reset a forgotten password or verify their phone."
+        )
+    if settings.frontend_proxy_secret and len(settings.frontend_proxy_secret) < 32:
         logging.getLogger("agrictec").warning("FRONTEND_PROXY_SECRET is short: use 32+ random characters.")
     with SessionLocal() as db:
         bootstrap(db, seed_demo_data=get_settings().seed_demo_data)
@@ -66,8 +71,11 @@ def create_app() -> FastAPI:
             "`Authorization: Bearer <token>`."
         ),
         lifespan=lifespan,
-        docs_url="/docs",
-        openapi_url=f"{settings.api_prefix}/openapi.json",
+        # The interactive docs and the API's full description are for development: on the live
+        # site they would list every console endpoint to anyone.
+        docs_url=None if settings.environment == "production" else "/docs",
+        redoc_url=None if settings.environment == "production" else "/redoc",
+        openapi_url=None if settings.environment == "production" else f"{settings.api_prefix}/openapi.json",
     )
     from app.core.body_limit import BodyLimit
 

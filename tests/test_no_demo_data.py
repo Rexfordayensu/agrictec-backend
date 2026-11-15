@@ -145,4 +145,4 @@ def test_migration_removes_demo_data_only_on_the_live_platform(monkeypatch):
     _migrate_0011_to_head(monkeypatch, "production")
     assert _demo_left() == (0, 0, "disabled")
     assert real.get(f"{API}/me/profile").status_code == 200  # real accounts untouched
-    assert boss.get(f"{API}/admin/farmers").json()[0]["email"] == "real.farmer@example.com"
+    assert boss.get(f"{API}/admin/farmers/page").json()["items"][0]["email"] == "real.farmer@example.com"

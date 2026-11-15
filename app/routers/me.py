@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from pydantic import Field
 from sqlalchemy.orm import Session as DB
 
-from app.core.deps import FarmerContext, farmer_context, writable_farmer
+from app.core.deps import FarmerContext, farmer_context, private_farmer, writable_farmer
 from app.core.ratelimit import rate_limit
 from app.db import get_db
 from app.domain.diagnosis import MAX_IMAGE_BYTES
@@ -23,6 +23,8 @@ router = APIRouter(prefix="/me", tags=["Farmer"])
 
 Reader = Annotated[FarmerContext, Depends(farmer_context)]
 Writer = Annotated[FarmerContext, Depends(writable_farmer)]
+# The farmer themselves only (not an admin viewing as them): money, statements, conversations.
+Private = Annotated[FarmerContext, Depends(private_farmer)]
 Database = Annotated[DB, Depends(get_db)]
 
 # ---------- Profile and onboarding ----------
@@ -66,7 +68,7 @@ def complete_onboarding(body: f.OnboardingComplete, response: Response, ctx: Wri
 
 
 @router.get("/records", response_model=list[f.FarmRecord])
-def list_records(ctx: Reader, db: Database):
+def list_records(ctx: Private, db: Database):
     return farm.list_records(db, ctx.user.id)
 
 
@@ -136,7 +138,7 @@ def delete_record(record_id: str, ctx: Writer, db: Database):
 
 @router.get("/momo/statement", dependencies=[Depends(rate_limit("momo-statement", 10, 3600))])
 def momo_statement(
-    ctx: Reader, db: Database,
+    ctx: Private, db: Database,
     period: Literal["all", "month", "3m", "year"] = "all",
     network: Literal["MTN", "Telecel", "AirtelTigo"] | None = None,
     direction: Literal["in", "out"] | None = None,
@@ -151,14 +153,14 @@ def momo_statement(
 
 
 @router.get("/momo/summary")
-def momo_summary(ctx: Reader, db: Database):
+def momo_summary(ctx: Private, db: Database):
     """Exact MoMo totals for the MoMo page: all time, this and last month, the last six months,
     by network and by verification status. Money is decimal text."""
     return farm.momo_summary(db, ctx.user.id)
 
 
 @router.get("/momo", response_model=list[f.MomoTransaction])
-def list_momo(ctx: Reader, db: Database):
+def list_momo(ctx: Private, db: Database):
     return farm.list_momo(db, ctx.user.id)
 
 
@@ -230,7 +232,7 @@ def clear_diagnoses(ctx: Writer, db: Database):
 
 
 @router.get("/chat", response_model=list[f.ChatMessage])
-def list_chat(ctx: Reader, db: Database):
+def list_chat(ctx: Private, db: Database):
     return farm.list_chat(db, ctx.user.id)
 
 
@@ -265,7 +267,7 @@ def credit_summary(ctx: Reader, db: Database):
 
 
 @router.get("/financial-summary")
-def my_financial_summary(ctx: Reader, db: Database, months: Literal["3", "6", "12"] = "6"):
+def my_financial_summary(ctx: Private, db: Database, months: Literal["3", "6", "12"] = "6"):
     """Exact totals (decimal strings) for the last 3, 6 or 12 months, verified vs self-reported."""
     return financial_summary.for_user(db, ctx.user.id, int(months))
 
@@ -283,12 +285,12 @@ def create_financial_report(body: ReportRequest, ctx: Writer, db: Database):
 
 
 @router.get("/reports/financial")
-def list_financial_reports(ctx: Reader, db: Database):
+def list_financial_reports(ctx: Private, db: Database):
     return financial_reports.list_for(db, ctx.user.id)
 
 
 @router.get("/reports/financial/{report_id}/file")
-def financial_report_file(report_id: str, ctx: Reader, db: Database):
+def financial_report_file(report_id: str, ctx: Private, db: Database):
     data, name = financial_reports.file(db, ctx.user.id, report_id)
     return attachment((name, data, "application/pdf"))
 
@@ -315,13 +317,13 @@ def loan_product_eligibility(product_id: str, body: EligibilityCheck, ctx: Write
 
 
 @router.get("/loan-assessments")
-def loan_assessments(ctx: Reader, db: Database):
+def loan_assessments(ctx: Private, db: Database):
     """The farmer's latest check of each loan product (newest first)."""
     return loan_eligibility.latest(db, ctx.user.id)
 
 
 @router.post("/loans/eligibility", response_model=f.EligibilityResult)
-def check_eligibility(body: f.EligibilityQuery, ctx: Reader, db: Database):
+def check_eligibility(body: f.EligibilityQuery, ctx: Private, db: Database):
     return lending.eligibility(db, ctx.user.id, body)
 
 
@@ -472,7 +474,7 @@ def predict_yield(body: f.YieldInput, ctx: Reader, db: Database):
 
 
 @router.get("/export", response_model=f.DataExport, dependencies=[Depends(rate_limit("data-export", 20, 3600))])
-def export_data(ctx: Reader, db: Database):
+def export_data(ctx: Private, db: Database):
     return account.export_data(db, ctx.user.id)
 
 

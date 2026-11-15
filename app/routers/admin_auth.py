@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, admin_context
 from app.core.ratelimit import client_ip, rate_limit
+from app.core.sessions import token_in_body
 from app.db import get_db
 from app.routers.common import clear_admin_cookies, set_admin_cookies
 from app.schemas import admin as a
@@ -26,7 +27,7 @@ def sign_in(body: Credentials, request: Request, response: Response, db: Databas
     change it."""
     token, session = admin_auth.sign_in(db, body.email, body.password, client_ip(request))
     set_admin_cookies(response, token, session.admin.role)
-    return a.AdminSignedIn(session=session, token=token)
+    return a.AdminSignedIn(session=session, token=token if token_in_body(request) else None)
 
 
 @router.get("/session", response_model=a.AdminSession)
@@ -56,7 +57,7 @@ def sign_out(
 @router.post("/change-password", response_model=a.AdminSession)
 def change_password(body: a.ChangePassword, ctx: Signed, db: Database):
     """Also clears a forced change (mustChangePassword)."""
-    admin_auth.change_password(db, ctx.admin, body.current_password, body.new_password)
+    admin_auth.change_password(db, ctx.admin, body.current_password, body.new_password, keep_session=ctx.session.id)
     return admin_auth.session_out(ctx.admin, ctx.session)
 
 
