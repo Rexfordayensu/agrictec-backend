@@ -21,6 +21,7 @@ from app.models import (
     OnboardingDraft,
     Profile,
     UserSettings,
+    VerificationRequest,
 )
 from app.schemas import farm as f
 from app.services import mappers, transactions
@@ -80,10 +81,32 @@ def apply_profile_fields(row: Profile, data: f.ProfileFields) -> None:
     row.outgrower_company = _text(data.outgrower_company) if data.farm_type == "Out-grower" else None
 
 
+def _name_key(name: str | None) -> str:
+    """A name as compared with the one on a reviewed Ghana Card: capitals and spacing aside."""
+    return " ".join((name or "").split()).casefold()
+
+
 def save_profile(db: DB, user_id: str, data: f.ProfileFields) -> f.Profile:
     row = get_profile_row(db, user_id)
+    old_name = row.name or ""
     apply_profile_fields(row, data)
+    rechecked = False
+    if _name_key(old_name) != _name_key(row.name) and row.ghana_card_status == "verified" and row.ghana_card_masked:
+        # The card was approved for the old name: lenders must never see a new name beside it.
+        # It goes back to review, the same masked card, with both names for the reviewer.
+        db.add(VerificationRequest(
+            user_id=user_id, kind="ghanaCard", submitted_value=row.ghana_card_masked,
+            value_hash=row.ghana_card_hash, status="pending", submitted_at=now_utc(),
+            note=f"Name changed from {old_name.strip()[:120]} to {row.name[:120]}: check the card again.",
+        ))
+        row.ghana_card_status = "pending"
+        row.ghana_card_submitted_at = now_utc()
+        rechecked = True
     db.commit()
+    if rechecked:
+        # The console's verification queue and the farmer's other devices update live.
+        bus.publish("platform")
+        bus.publish("account", user_id)
     return mappers.profile_out(row, user_id)
 
 

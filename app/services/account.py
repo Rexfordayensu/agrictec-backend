@@ -4,13 +4,17 @@ own data export, import and deletion (services/onboarding.service.ts, lib/data/b
 import hashlib
 import hmac
 import json
+import logging
 from decimal import Decimal
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
-from app.core.errors import AppError
+from app.core.errors import AppError, Forbidden
+from app.core.security import hash_password, verify_password
+from app.core.sessions import end_sessions_for
+from app.domain.passwords import farmer_password_problem
 from app.core.events import bus
 from app.domain.announcements import by_severity, in_audience, is_live
 from app.domain.clock import now_utc, parse_iso
@@ -34,7 +38,7 @@ from app.models import (
 )
 from app.schemas import farm as f
 from app.schemas.platform import Announcement as AnnouncementOut
-from app.services import farm, lending, platform_store, transactions, verifications
+from app.services import farm, lending, notifications, password_reset, platform_store, transactions, verifications
 from app.services.farmer_data import load_farmer
 from app.services.mappers import announcement_out
 
@@ -252,6 +256,52 @@ def import_data(db: DB, user_id: str, data: f.DataImport) -> None:
             change_status(db, entry, kind, "self_reported", initial=True, reason="Farmer imported an entry; not verified.")
     farm.save_settings(db, user_id, data.settings, commit=False)
     db.commit()
+
+
+def change_password(db: DB, user, session_id: str, current: str, new: str, code: str) -> None:
+    """The signed-in farmer chooses a new password, with the code emailed to their account's
+    email (password_reset.send_change_code): it proves the email is theirs. Every other device is
+    signed out (a stolen password stops working at once); this one stays signed in. The farmer
+    is told, in case it wasn't them."""
+    if user.is_guest:
+        raise Forbidden("The guest demo has no password.")
+    if not verify_password(current, user.password_hash):
+        raise AppError("Your current password is incorrect.", code="bad_password")
+    if problem := farmer_password_problem(new):
+        raise AppError(problem)
+    if new == current:
+        raise AppError("Choose a password different from your current one.")
+    # Last, so a mistake above never uses up one of the code's tries.
+    password_reset.use_code(db, user, code)
+    user.password_hash = hash_password(new)
+    user.must_change_password = False
+    end_sessions_for(db, user_id=user.id, keep=session_id)
+    notice = notifications.create(
+        db, user.id, "account", "Your password was changed",
+        "Your AgriCtec password was changed and your other devices were signed out. If this wasn't "
+        "you, reset your password straight away and contact AgriCtec support.",
+    )
+    db.commit()
+    notifications.deliver(notice)
+
+
+def delete_account(db: DB, user, password: str, confirmation: str) -> None:
+    """The farmer closes their account: the sign-in and everything in it (profile, records,
+    MoMo, evidence, reports, verifications, applications, notifications, sessions) are deleted
+    at once, as when staff delete a farmer. Needs the password and DELETE typed. Nothing about
+    the account is kept: only the server log notes that an account ID was closed."""
+    if confirmation.strip() != "DELETE":
+        raise AppError("Type DELETE to confirm.")
+    if user.is_guest:
+        raise Forbidden("The guest demo has no account to delete.")
+    if not verify_password(password, user.password_hash):
+        raise AppError("Your password is incorrect.", code="bad_password")
+    user_id = user.id
+    db.delete(user)
+    db.commit()
+    logging.getLogger("agrictec").info("Account %s was closed by its owner", user_id)
+    # An open console updates its figures; the farmer's other tabs see the session end.
+    bus.publish("account", user_id)
 
 
 def delete_data(db: DB, user_id: str, confirmation: str) -> None:

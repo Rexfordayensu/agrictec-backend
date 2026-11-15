@@ -51,3 +51,42 @@ def test_the_staff_sign_in_has_the_same_account_wide_limit(monkeypatch):
         last = guesser.post(f"{API}/admin/auth/login", headers=from_address(secret, f"203.0.113.{n // 4 + 1}"),
                             json={"email": "superadmin@agrictec.app", "password": f"wrong-{n}"})
     assert last.status_code == 423
+
+
+def test_a_device_that_signed_in_before_is_not_held_by_the_account_wide_lock(monkeypatch):
+    """Someone guessing from many addresses can't keep the owner out: the owner's own device
+    (it signed in before) still gets in; a new device waits for the lock."""
+    from app.config import get_settings
+
+    secret = "s" * 40
+    monkeypatch.setattr(get_settings(), "frontend_proxy_secret", secret)
+    owner = new_client()
+    first = owner.post(f"{API}/admin/auth/login", headers=from_address(secret, "192.0.2.77"),
+                       json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert first.status_code == 200
+    assert owner.cookies.get("agrictec_known_admin")
+    owner.post(f"{API}/admin/auth/logout")
+
+    guesser = new_client()
+    for n in range(login_lockout.ACCOUNT_MAX_FAILURES):
+        last = guesser.post(f"{API}/admin/auth/login", headers=from_address(secret, f"203.0.113.{n // 4 + 1}"),
+                            json={"email": "superadmin@agrictec.app", "password": f"wrong-{n}"})
+    assert last.status_code == 423
+    stranger = new_client().post(f"{API}/admin/auth/login", headers=from_address(secret, "192.0.2.99"),
+                                 json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert stranger.status_code == 423
+    back = owner.post(f"{API}/admin/auth/login", headers=from_address(secret, "192.0.2.77"),
+                      json={"email": "superadmin@agrictec.app", "password": "Admin@2026"})
+    assert back.status_code == 200, back.text
+
+
+def test_a_known_device_cookie_for_another_account_counts_for_nothing():
+    signup("first.device@example.com")
+    signup("second.device@example.com")
+    c = new_client()
+    assert c.post(f"{API}/auth/login", json={"email": "first.device@example.com", "password": "password123"}).status_code == 200
+    cookie = c.cookies.get("agrictec_known_device")
+    assert login_lockout.is_known_device(cookie, "first.device@example.com", "farmer")
+    assert not login_lockout.is_known_device(cookie, "second.device@example.com", "farmer")
+    assert not login_lockout.is_known_device(cookie, "first.device@example.com", "admin")
+    assert not login_lockout.is_known_device("forged.value", "first.device@example.com", "farmer")

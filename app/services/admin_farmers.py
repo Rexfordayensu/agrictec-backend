@@ -15,6 +15,7 @@ from app.domain.csv import to_csv
 from app.domain.clock import now_utc
 from app.domain.credit import calculate_credit_score, score_label
 from app.domain.passwords import make_temp_password
+from app.domain.permissions import can_export_contacts
 from app.domain.verification import normalize_phone
 from app.models import (
     Admin,
@@ -235,42 +236,47 @@ def _yes_no(value: bool) -> str:
     return "Yes" if value else "No"
 
 
+# Contact details and the farm pin: in bulk exports for Admin and Super admin only.
+CONTACT_COLUMNS = {"Email", "Phone", "Community", "GPS latitude", "GPS longitude"}
+
+
 def export_csv(db: DB, actor: Admin, ids: list[str] | None) -> str:
-    """A whitelist of columns: never a password hash, never Ghana Card digits (only the status)."""
+    """A whitelist of columns: never a password hash, never Ghana Card digits (only the status),
+    and contact details and farm pins only for roles allowed to export them."""
     farmers = [f for f in list_farmers(db) if not f.is_guest and (ids is None or f.user_id in ids)]
     bands = platform_store.credit_config(db).bands
-    csv = to_csv(
-        farmers,
-        [
-            ("ID", lambda f: f.user_id),
-            ("Name", lambda f: f.profile.name),
-            ("Email", lambda f: f.email),
-            ("Phone", lambda f: f.profile.phone),
-            ("Region", lambda f: f.profile.region),
-            ("Constituency", lambda f: f.profile.constituency),
-            ("Community", lambda f: f.profile.community or ""),
-            ("Farm", lambda f: f.profile.farm_name),
-            ("Farm type", lambda f: f.profile.farm_type),
-            ("Acres", lambda f: f.profile.acres),
-            ("Primary crops", lambda f: "; ".join(f.profile.primary_crops)),
-            ("GPS latitude", lambda f: f.profile.gps.lat if f.profile.gps else ""),
-            ("GPS longitude", lambda f: f.profile.gps.lng if f.profile.gps else ""),
-            ("Phone verified", lambda f: _yes_no(f.profile.verification.phone)),
-            ("Location verified", lambda f: _yes_no(f.profile.verification.location)),
-            ("Ghana Card verified", lambda f: _yes_no(f.profile.verification.ghana_card)),
-            ("Ghana Card status", lambda f: f.profile.ghana_card.status),
-            ("Status", lambda f: f.status),
-            ("Suspension reason", lambda f: f.suspended_reason or ""),
-            ("AgriCtec score", lambda f: f.stats.score),
-            ("Score band", lambda f: score_label(f.stats.score, bands)),
-            ("Records", lambda f: f.stats.records),
-            ("MoMo transactions", lambda f: f.stats.momo),
-            ("Diagnoses", lambda f: f.stats.diagnoses),
-            ("Tags", lambda f: "; ".join(f.tags)),
-            ("Joined", lambda f: f.created_at.isoformat()),
-            ("Last active", lambda f: f.last_active_at.isoformat() if f.last_active_at else ""),
-        ],
-    )
+    columns = [
+        ("ID", lambda f: f.user_id),
+        ("Name", lambda f: f.profile.name),
+        ("Email", lambda f: f.email),
+        ("Phone", lambda f: f.profile.phone),
+        ("Region", lambda f: f.profile.region),
+        ("Constituency", lambda f: f.profile.constituency),
+        ("Community", lambda f: f.profile.community or ""),
+        ("Farm", lambda f: f.profile.farm_name),
+        ("Farm type", lambda f: f.profile.farm_type),
+        ("Acres", lambda f: f.profile.acres),
+        ("Primary crops", lambda f: "; ".join(f.profile.primary_crops)),
+        ("GPS latitude", lambda f: f.profile.gps.lat if f.profile.gps else ""),
+        ("GPS longitude", lambda f: f.profile.gps.lng if f.profile.gps else ""),
+        ("Phone verified", lambda f: _yes_no(f.profile.verification.phone)),
+        ("Location verified", lambda f: _yes_no(f.profile.verification.location)),
+        ("Ghana Card verified", lambda f: _yes_no(f.profile.verification.ghana_card)),
+        ("Ghana Card status", lambda f: f.profile.ghana_card.status),
+        ("Status", lambda f: f.status),
+        ("Suspension reason", lambda f: f.suspended_reason or ""),
+        ("AgriCtec score", lambda f: f.stats.score),
+        ("Score band", lambda f: score_label(f.stats.score, bands)),
+        ("Records", lambda f: f.stats.records),
+        ("MoMo transactions", lambda f: f.stats.momo),
+        ("Diagnoses", lambda f: f.stats.diagnoses),
+        ("Tags", lambda f: "; ".join(f.tags)),
+        ("Joined", lambda f: f.created_at.isoformat()),
+        ("Last active", lambda f: f.last_active_at.isoformat() if f.last_active_at else ""),
+    ]
+    if not can_export_contacts(actor.role):
+        columns = [c for c in columns if c[0] not in CONTACT_COLUMNS]
+    csv = to_csv(farmers, columns)
     append_audit(
         db, actor, action="farmer.export", target_type="farmer",
         summary=f"Exported {len(farmers)} farmer{'' if len(farmers) == 1 else 's'} to CSV",

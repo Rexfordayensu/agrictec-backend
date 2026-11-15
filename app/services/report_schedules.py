@@ -21,7 +21,7 @@ from app.domain.clock import iso, now_utc
 from app.domain.reports import REPORT_CATALOG, report_file_name, report_to_csv
 from app.integrations import messaging
 from app.models import Admin, ReportSchedule
-from app.services import alerts, farm_alerts, insights
+from app.services import alerts, farm_alerts, housekeeping, insights
 
 log = logging.getLogger("agrictec.report_schedules")
 
@@ -225,6 +225,8 @@ class Scheduler:
                 with SessionLocal() as db:
                     send_due(db)
                     purge_stale(db)
+                    # Ended sessions, used codes and run-out lockouts (every few hours).
+                    housekeeping.run_if_due(db)
                 with SessionLocal() as db:
                     # Twice a day; the first worker to claim the slot does it.
                     farm_alerts.run_weather_alerts(db)

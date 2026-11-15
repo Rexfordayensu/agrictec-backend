@@ -11,6 +11,7 @@ from app.core.sessions import (
     clear_cookie,
     set_cookie,
 )
+from app.services import login_lockout
 
 YEAR = 365 * 24 * 3600
 
@@ -34,6 +35,12 @@ def set_onboarded_hint(response: Response, onboarded: bool) -> None:
         set_cookie(response, ONBOARDED_COOKIE, "1", YEAR, http_only=False)
     else:
         clear_cookie(response, ONBOARDED_COOKIE)
+
+
+def remember_device(response: Response, email: str, scope: str) -> None:
+    """After a successful sign-in: this device is known to the account (services/login_lockout.py)."""
+    set_cookie(response, login_lockout.KNOWN_DEVICE_COOKIES[scope], login_lockout.known_device_value(email, scope),
+               login_lockout.KNOWN_DEVICE_DAYS * 24 * 3600)
 
 
 def clear_farmer_cookies(response: Response) -> None:

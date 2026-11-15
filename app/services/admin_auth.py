@@ -46,12 +46,14 @@ def session_out(admin: Admin, record: AuthSession) -> AdminSession:
 # ---------- Sessions ----------
 
 
-def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple[str, AdminSession]:
+def sign_in(
+    db: DB, email: str, password: str, client: str = "unknown", known_device: bool = False
+) -> tuple[str, AdminSession]:
     """A farmer's email gets the same generic error as a wrong password, so the page never
     reveals which accounts exist. `client` is the visitor's address (the lockout's other half)."""
     now = now_utc()
     address = email.strip().lower()
-    keys = login_lockout.check(db, address, client, "admin", now)
+    keys = login_lockout.check(db, address, client, "admin", now, known_device=known_device)
 
     admin = db.scalars(select(Admin).where(Admin.email == address)).first()
     if not verify_password(password, admin.password_hash if admin else None) or not admin:

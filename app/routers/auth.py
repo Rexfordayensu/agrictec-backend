@@ -10,7 +10,7 @@ from app.core.sessions import IMPERSONATION_HEADER, end_session, find_session, t
 from app.db import get_db
 from app.domain.clock import now_utc
 from app.models import Admin, Profile, User
-from app.routers.common import clear_farmer_cookies, set_farmer_cookies
+from app.routers.common import clear_farmer_cookies, remember_device, set_farmer_cookies
 from app.schemas.base import CamelModel, Message
 from app.schemas.farm import (
     Credentials,
@@ -21,7 +21,7 @@ from app.schemas.farm import (
     SignedIn,
     SignUp,
 )
-from app.services import admin_farmers, auth, password_reset
+from app.services import admin_farmers, auth, login_lockout, password_reset
 
 router = APIRouter(prefix="/auth", tags=["Farmer auth"])
 
@@ -47,7 +47,11 @@ def sign_in(body: Credentials, request: Request, response: Response, db: DB = De
     """409 with code "password_change_required" after an admin reset: call
     /auth/replace-temporary-password with the temporary and the new password. Five wrong passwords
     from one address lock that email there for five minutes (423, with `until`)."""
-    token, session = auth.sign_in(db, body.email, body.password, client_ip(request))
+    known = login_lockout.is_known_device(
+        request.cookies.get(login_lockout.KNOWN_DEVICE_COOKIES["farmer"]), body.email, "farmer"
+    )
+    token, session = auth.sign_in(db, body.email, body.password, client_ip(request), known_device=known)
+    remember_device(response, body.email, "farmer")
     return _signed_in(db, request, response, token, session)
 
 

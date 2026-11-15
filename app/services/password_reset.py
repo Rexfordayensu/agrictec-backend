@@ -167,3 +167,83 @@ def confirm_reset(db: DB, email: str, code: str, new_password: str) -> tuple[str
     token, session = auth._start(db, user)  # Commits (and refuses a suspended account).
     notifications.deliver(notice)
     return token, session
+
+
+# ---------- A code for changing the password while signed in ----------
+
+EMAIL_UNAVAILABLE = (
+    "AgriCtec can't send email codes yet, so your password can't be changed here. "
+    "Contact AgriCtec support."
+)
+
+
+def mask_email(email: str) -> str:
+    """ama.mensah@gmail.com -> a********@gmail.com: enough to recognise, not to read."""
+    name, _, domain = email.partition("@")
+    return f"{name[:1]}{'*' * max(3, len(name) - 1)}@{domain}" if domain else email
+
+
+def send_change_code(db: DB, user: User) -> str:
+    """Emails a six-digit code to the account's own email, to change the password while signed
+    in: it proves the email is the farmer's. The same codes as a reset (keyed hash, 15 minutes,
+    five tries, at most one a minute and five a day). Returns the email, masked."""
+    settings = get_settings()
+    if not settings.email_enabled and settings.environment == "production":
+        raise AppError(EMAIL_UNAVAILABLE, code="email_unavailable", status_code=503)
+    now = now_utc()
+    latest = _live(db, user.id, lock=True)
+    if latest and now - latest.created_at < RESEND_AFTER:
+        db.rollback()
+        raise AppError("A code was just sent. Wait a minute before asking for another.",
+                       code="code_recent", status_code=429)
+    today = db.scalar(
+        select(func.count())
+        .select_from(PasswordReset)
+        .where(PasswordReset.user_id == user.id, PasswordReset.created_at > now - timedelta(days=1))
+    )
+    if today >= DAILY_CODES:
+        db.rollback()
+        raise AppError("You have asked for too many codes today. Try again tomorrow.",
+                       code="code_limit", status_code=429)
+    db.execute(
+        update(PasswordReset)
+        .where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None))
+        .values(used_at=now)
+    )
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.add(PasswordReset(user_id=user.id, code_hash=_digest(user.id, code), created_at=now, expires_at=now + CODE_TTL))
+    db.commit()
+    if settings.email_enabled:
+        threading.Thread(target=_send_change, args=(user.email, code), name="agrictec-change-code", daemon=True).start()
+    else:
+        # Developing without email: show the code to whoever runs the API locally.
+        log.warning("Password change code for %s: %s (email is not configured)", user.email, code)
+    return mask_email(user.email)
+
+
+def _send_change(email: str, code: str) -> None:
+    text = (
+        f"Your {APP_NAME} code to change your password is {code}. It expires in 15 minutes. "
+        "If you did not ask to change your password, someone may know it: reset it and contact AgriCtec support."
+    )
+    try:
+        messaging.send_email(email, f"{APP_NAME} password change code", text)
+    except messaging.MessageFailed as error:
+        log.warning("Password change code by email failed: %s", error)
+    except Exception:  # Never let a gateway take the worker down.
+        log.warning("Password change code by email failed", exc_info=True)
+
+
+def use_code(db: DB, user: User, code: str) -> None:
+    """Checks the farmer's latest code and marks it used (not committed). A wrong code counts
+    one of its five tries (committed) and raises."""
+    reset = _live(db, user.id, lock=True)
+    now = now_utc()
+    if not reset or reset.expires_at <= now or reset.attempts >= MAX_ATTEMPTS:
+        db.rollback()
+        raise AppError(BAD_CODE, code="invalid_code")
+    if not hmac.compare_digest(reset.code_hash, _digest(user.id, code.strip())):
+        reset.attempts += 1
+        db.commit()
+        raise AppError(BAD_CODE, code="invalid_code")
+    reset.used_at = now

@@ -77,11 +77,11 @@ def sign_up(db: DB, email: str, password: str) -> tuple[str, Session]:
     return started
 
 
-def _check_password(db: DB, email: str, password: str, client: str) -> User | None:
+def _check_password(db: DB, email: str, password: str, client: str, known_device: bool = False) -> User | None:
     """The user when the password is right. Five wrong ones in a row from one address lock that
     email there for five minutes (423 with when it ends); a wrong one says only that it's wrong."""
     now = now_utc()
-    keys = login_lockout.check(db, email, client, "farmer", now)
+    keys = login_lockout.check(db, email, client, "farmer", now, known_device=known_device)
     user = _find(db, email)
     if not verify_password(password, user.password_hash if user else None) or not user:
         after = login_lockout.failed(db, keys, now)
@@ -93,8 +93,8 @@ def _check_password(db: DB, email: str, password: str, client: str) -> User | No
     return user
 
 
-def sign_in(db: DB, email: str, password: str, client: str = "unknown") -> tuple[str, Session]:
-    user = _check_password(db, email, password, client)
+def sign_in(db: DB, email: str, password: str, client: str = "unknown", known_device: bool = False) -> tuple[str, Session]:
+    user = _check_password(db, email, password, client, known_device)
     if user.status != "suspended" and user.must_change_password:
         # An admin reset the password: the farmer chooses a new one before any session starts.
         raise Conflict("Choose a new password to finish signing in.", code="password_change_required")
