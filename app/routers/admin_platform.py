@@ -12,7 +12,8 @@ from app.core.deps import AdminContext, require
 from app.db import get_db
 from app.domain.announcements import in_audience
 from app.domain.clock import today
-from app.domain.reports import datasets_meta
+from app.domain.permissions import can_export_contacts
+from app.domain.reports import CONTACT_COLUMNS, datasets_meta
 from app.integrations import market_prices
 from app.routers.common import file_response
 from app.schemas import admin as a
@@ -278,7 +279,7 @@ def export_audit(body: a.AuditExport, ctx: allowed("audit.view"), db: Database):
 
 @router.get("/reports", tags=["Admin reports"])
 def report_catalog(ctx: allowed("reports.export")):
-    return {"reports": insights.catalog(), "datasets": datasets_meta()}
+    return {"reports": insights.catalog(), "datasets": datasets_meta(contacts=can_export_contacts(ctx.admin.role))}
 
 
 class ScheduleInput(CamelModel):
@@ -336,14 +337,21 @@ def export_report(
     return {"filename": result["filename"], "report": result["report"]}
 
 
+def _without_contacts(spec: a.BuilderSpec, ctx) -> a.BuilderSpec:
+    """Contact columns are dropped for roles that may not export them in bulk."""
+    if can_export_contacts(ctx.admin.role):
+        return spec
+    return spec.model_copy(update={"columns": [c for c in spec.columns if c not in CONTACT_COLUMNS]})
+
+
 @router.post("/reports/builder/preview", response_model=a.BuilderResult, tags=["Admin reports"])
 def builder_preview(body: a.BuilderSpec, ctx: allowed("reports.export"), db: Database):
-    return insights.preview(db, body)
+    return insights.preview(db, _without_contacts(body, ctx))
 
 
 @router.post("/reports/builder/export", tags=["Admin reports"])
 def builder_export(body: a.BuilderSpec, ctx: allowed("reports.export"), db: Database):
-    result = insights.export_custom(db, ctx.admin, body)
+    result = insights.export_custom(db, ctx.admin, _without_contacts(body, ctx))
     response = file_response(result["csv"], result["filename"])
     response.headers["X-Row-Count"] = str(result["rows"])
     return response

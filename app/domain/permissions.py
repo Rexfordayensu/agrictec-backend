@@ -162,3 +162,12 @@ def audit_group_of(action: str) -> str:
         "announcement": "content",
         "admin": "team",
     }.get(prefix, "system")
+
+
+# Bulk exports of farmers' contact details and farm pins (CSV, report builder): Admin and Super
+# admin only. Other roles still export the rest; they see contacts one farmer at a time.
+CONTACT_EXPORT_ROLES = ("admin", "super_admin")
+
+
+def can_export_contacts(role: str) -> bool:
+    return role in CONTACT_EXPORT_ROLES

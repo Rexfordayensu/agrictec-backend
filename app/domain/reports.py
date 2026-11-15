@@ -518,14 +518,19 @@ DATASETS: dict[str, dict] = {
 }
 
 
-def datasets_meta() -> list[dict]:
+# Contact details: in report-builder exports for roles allowed to export them only.
+CONTACT_COLUMNS = {"email", "phone"}
+
+
+def datasets_meta(*, contacts: bool = True) -> list[dict]:
     return [
         {
             "id": key,
             "label": ds["label"],
             "description": ds["description"],
             "dateLabel": ds["dateLabel"],
-            "columns": [{"key": c.key, "label": c.label, "default": c.default} for c in ds["columns"]],
+            "columns": [{"key": c.key, "label": c.label, "default": c.default} for c in ds["columns"]
+                        if contacts or c.key not in CONTACT_COLUMNS],
         }
         for key, ds in DATASETS.items() if key not in ("records", "momo")
     ]

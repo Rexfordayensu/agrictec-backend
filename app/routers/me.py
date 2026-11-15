@@ -12,12 +12,12 @@ from app.core.deps import FarmerContext, farmer_context, private_farmer, writabl
 from app.core.ratelimit import rate_limit
 from app.db import get_db
 from app.domain.diagnosis import MAX_IMAGE_BYTES
-from app.routers.common import set_onboarded_hint
+from app.routers.common import clear_farmer_cookies, set_onboarded_hint
 from app.schemas import farm as f
 from app.schemas.base import CamelModel, Confirmation, Message
 from app.schemas.platform import Announcement
 from app.routers.transactions import attachment
-from app.services import account, farm, financial_reports, financial_summary, lending, loan_eligibility, notifications, phone_verification, subscriptions, tools, verifications
+from app.services import account, farm, financial_reports, financial_summary, lending, loan_eligibility, notifications, password_reset, phone_verification, subscriptions, tools, verifications
 
 router = APIRouter(prefix="/me", tags=["Farmer"])
 
@@ -482,6 +482,44 @@ def export_data(ctx: Private, db: Database):
 def import_data(body: f.DataImport, ctx: Writer, db: Database):
     account.import_data(db, ctx.user.id, body)
     return Message(detail="Your data was restored.")
+
+
+class ChangePassword(CamelModel):
+    current_password: Annotated[str, Field(min_length=1, max_length=200)]
+    new_password: Annotated[str, Field(min_length=1, max_length=200)]
+    code: Annotated[str, Field(min_length=1, max_length=12)]
+
+
+class CodeSent(CamelModel):
+    detail: str
+    sent_to: str
+
+
+@router.post("/password/code", response_model=CodeSent, dependencies=[Depends(rate_limit("password-code", 5, 3600))])
+def password_change_code(ctx: Writer, db: Database):
+    """Emails a six-digit code to the account's email, needed to change the password."""
+    sent_to = password_reset.send_change_code(db, ctx.user)
+    return CodeSent(detail=f"We sent a 6-digit code to {sent_to}. It expires in 15 minutes.", sent_to=sent_to)
+
+
+@router.post("/password", response_model=Message, dependencies=[Depends(rate_limit("password-change", 10, 3600))])
+def change_password(body: ChangePassword, ctx: Writer, db: Database):
+    """A new password, with the emailed code; every other device is signed out."""
+    account.change_password(db, ctx.user, ctx.session.id, body.current_password, body.new_password, body.code)
+    return Message(detail="Password changed. Your other devices were signed out.")
+
+
+class DeleteAccount(CamelModel):
+    password: Annotated[str, Field(min_length=1, max_length=200)]
+    confirmation: Annotated[str, Field(max_length=20)]
+
+
+@router.post("/delete-account", response_model=Message, dependencies=[Depends(rate_limit("account-delete", 5, 3600))])
+def delete_account(body: DeleteAccount, response: Response, ctx: Writer, db: Database):
+    """Closes the account for good: the password and DELETE typed. Signed out everywhere."""
+    account.delete_account(db, ctx.user, body.password, body.confirmation)
+    clear_farmer_cookies(response)
+    return Message(detail="Your account was deleted.")
 
 
 @router.post("/delete-data", response_model=Message, dependencies=[Depends(rate_limit("data-delete", 5, 3600))])

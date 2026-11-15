@@ -6,12 +6,14 @@ the owner signing in from their own connection. A wrong password says only "Inco
 password" (no countdown of attempts); the lock says when signing in works again."""
 
 import hashlib
+import hmac
 import math
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session as DB
 
 from app.core.errors import Locked
+from app.core.security import sign, unsign
 from app.models import LoginLockout
 from app.schemas.admin import LockStatus
 
@@ -63,12 +65,31 @@ def fail_attempt(
     return LockStatus(locked=False, attempts_left=limit - failures)
 
 
-def check(db: DB, email: str, client: str, scope: str, now: datetime) -> tuple[str, str]:
+# A device that signed in to an account before carries this (signed, httpOnly): someone guessing
+# from elsewhere can't use the account-wide lock to keep the owner out.
+KNOWN_DEVICE_COOKIES = {"farmer": "agrictec_known_device", "admin": "agrictec_known_admin"}
+KNOWN_DEVICE_DAYS = 180
+
+
+def known_device_value(email: str, scope: str) -> str:
+    return sign(account_key(email, scope))
+
+
+def is_known_device(cookie: str | None, email: str, scope: str) -> bool:
+    """Whether the request comes from a device that signed in to this account before."""
+    value = unsign(cookie)
+    return bool(value) and hmac.compare_digest(value, account_key(email, scope))
+
+
+def check(db: DB, email: str, client: str, scope: str, now: datetime, *, known_device: bool = False) -> tuple[str, str]:
     """Refuses a sign-in while this email is locked from this address or account-wide (423,
-    checked before the password, so a right guess during a lock gets nothing). The two keys."""
+    checked before the password, so a right guess during a lock gets nothing). A device that
+    signed in to the account before isn't held by the account-wide lock (only by its own
+    address's). The two keys."""
     pair = lockout_key(email, client, scope=scope)
     whole = account_key(email, scope)
-    for key, limit in ((pair, MAX_LOGIN_ATTEMPTS), (whole, ACCOUNT_MAX_FAILURES)):
+    checks = [(pair, MAX_LOGIN_ATTEMPTS)] + ([] if known_device else [(whole, ACCOUNT_MAX_FAILURES)])
+    for key, limit in checks:
         lock = lock_status(db, key, now, limit)
         if lock.locked and lock.until:
             raise locked_error(lock.until, now)

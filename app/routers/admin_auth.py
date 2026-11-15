@@ -9,11 +9,11 @@ from app.core.deps import AdminContext, admin_context
 from app.core.ratelimit import client_ip, rate_limit
 from app.core.sessions import token_in_body
 from app.db import get_db
-from app.routers.common import clear_admin_cookies, set_admin_cookies
+from app.routers.common import clear_admin_cookies, remember_device, set_admin_cookies
 from app.schemas import admin as a
 from app.schemas.base import Message
 from app.schemas.farm import Credentials
-from app.services import admin_auth
+from app.services import admin_auth, login_lockout
 
 router = APIRouter(prefix="/admin/auth", tags=["Admin auth"])
 Database = Annotated[DB, Depends(get_db)]
@@ -25,8 +25,12 @@ def sign_in(body: Credentials, request: Request, response: Response, db: Databas
     """Five wrong passwords from one address lock that email there for five minutes (423, with
     `until`); a wrong one says only that it's wrong. An admin on a temporary password signs in with mustChangePassword true and can only
     change it."""
-    token, session = admin_auth.sign_in(db, body.email, body.password, client_ip(request))
+    known = login_lockout.is_known_device(
+        request.cookies.get(login_lockout.KNOWN_DEVICE_COOKIES["admin"]), body.email, "admin"
+    )
+    token, session = admin_auth.sign_in(db, body.email, body.password, client_ip(request), known_device=known)
     set_admin_cookies(response, token, session.admin.role)
+    remember_device(response, body.email, "admin")
     return a.AdminSignedIn(session=session, token=token if token_in_body(request) else None)
 
 
