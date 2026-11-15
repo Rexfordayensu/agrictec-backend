@@ -1,15 +1,13 @@
 """The application pack: one PDF summarising a farmer's loan application for the lender, sent
-with the transaction statement and the documents the farmer uploaded. Pure (fpdf2).
+with the transaction statement and the documents the farmer uploaded. Pure (fpdf2), on the
+AgriCtec letterhead (app/domain/pdf_brand.py).
 
 It states what the farmer asked for and provided, AgriCtec's preliminary check and the consent
 behind sharing it. It is not a loan decision, and it never says the farmer qualifies."""
 
 from datetime import datetime
 
-from fpdf import FPDF
-from fpdf.enums import XPos, YPos
-
-from app.domain.financial_report import clean, ghs
+from app.domain.pdf_brand import TOTAL_ROW, BrandedPDF, clean, ghs
 
 FOOTER = (
     "Prepared by AgriCtec at the farmer's request and with the farmer's consent. AgriCtec's check "
@@ -17,52 +15,19 @@ FOOTER = (
 )
 
 
-class _Pack(FPDF):
-    reference = ""
-
-    def footer(self) -> None:
-        self.set_y(-16)
-        self.set_font("Helvetica", size=7)
-        self.set_text_color(90, 90, 90)
-        self.multi_cell(0, 3.5, clean(FOOTER), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        self.cell(0, 4, clean(f"Application {self.reference} - page {self.page_no()}"), align="R")
-
-
 def render(*, application: dict, profile: dict, documents: list[dict], consent: dict | None,
            generated_at: datetime) -> bytes:
-    pdf = _Pack(format="A4")
-    pdf.reference = application["reference"]
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.set_title(f"AgriCtec loan application {application['reference']}")
-    pdf.set_author("AgriCtec")
+    pdf = BrandedPDF(title="LOAN APPLICATION PACK", reference=application["reference"], generated_at=generated_at)
     pdf.add_page()
-
-    def heading(text: str) -> None:
-        pdf.ln(3)
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.set_text_color(5, 120, 85)
-        pdf.cell(0, 7, clean(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_text_color(20, 20, 20)
-
-    def rows(pairs: list[tuple[str, str]]) -> None:
-        pdf.set_font("Helvetica", size=9)
-        for label, value in pairs:
-            pdf.set_font("Helvetica", "B", 9)
-            pdf.cell(55, 5.5, clean(label))
-            pdf.set_font("Helvetica", size=9)
-            pdf.multi_cell(0, 5.5, clean(value or "Not provided"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 9, "AgriCtec loan application", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("Helvetica", size=9)
-    pdf.set_text_color(90, 90, 90)
-    pdf.cell(0, 5, clean(f"Reference {application['reference']} - prepared {generated_at:%d %b %Y %H:%M} GMT"),
-             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_text_color(20, 20, 20)
-
     product = application["productSnapshot"]
-    heading("Application")
-    rows([
+    pdf.document_title(
+        "LOAN APPLICATION",
+        f"Prepared for {application['lenderName']} at the farmer's request.",
+    )
+
+    pdf.section("Application")
+    pdf.details([
+        ("Application reference", application["reference"]),
         ("Lender", application["lenderName"]),
         ("Loan product", f"{product.get('name')} (version {application['productVersion']})"),
         ("Amount requested", ghs(application["amount"])),
@@ -70,61 +35,76 @@ def render(*, application: dict, profile: dict, documents: list[dict], consent: 
         ("Purpose", application["purpose"]),
     ])
 
-    heading("Farmer")
-    rows([
-        ("Name", profile.get("name")),
+    pdf.section("Applicant")
+    acres = profile.get("acres")
+    pdf.details([
+        ("Full name", profile.get("name")),
         ("Phone", profile.get("phone")),
-        ("Farm", profile.get("farm_name")),
+        ("Farm name", profile.get("farm_name")),
         ("Location", ", ".join(x for x in (profile.get("constituency"), profile.get("region")) if x)),
         ("Main crops", ", ".join(profile.get("primary_crops") or [])),
-        ("Farm size", f"{profile.get('acres')} acres" if profile.get("acres") else None),
+        ("Farm size", f"{acres:g} acres" if acres else None),
         ("Ghana Card", application.get("identityLabel")),
     ])
 
     if application.get("letter"):
-        heading("Application letter")
+        pdf.section("Application letter", keep=20)
         pdf.set_font("Helvetica", size=9.5)
-        pdf.multi_cell(0, 5, clean(application["letter"]), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.multi_cell(0, 5, clean(application["letter"]), align="L")
+        pdf.ln(1)
 
     answers = application.get("answerRows") or []
     if answers:
-        heading("Answers to the lender's requirements")
-        rows([(a["name"], a["value"]) for a in answers])
+        pdf.section("Answers to the lender's requirements", keep=20)
+        style = pdf.table_style(col_widths=(60, 110), text_align=("LEFT", "LEFT"))
+        with pdf.table(**style) as table:
+            table.row(["Requirement", "Answer"])
+            for a in answers:
+                table.row([clean(a["name"]), clean(a["value"] or "Not provided")])
 
-    heading("Documents attached")
+    pdf.section("Documents attached", keep=18)
     if documents:
-        rows([(d["requirementName"], d["filename"]) for d in documents])
+        style = pdf.table_style(col_widths=(10, 80, 80), text_align=("CENTER", "LEFT", "LEFT"))
+        with pdf.table(**style) as table:
+            table.row(["No.", "Requirement", "File"])
+            for number, d in enumerate(documents, start=1):
+                table.row([str(number), clean(d["requirementName"]), clean(d["filename"])])
     else:
-        pdf.set_font("Helvetica", size=9)
-        pdf.cell(0, 5.5, "None.", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.note("No documents were attached.", italic=False)
 
     assessment = application.get("assessment")
     if assessment:
-        heading("AgriCtec's preliminary check (not a loan decision)")
+        pdf.section("AgriCtec's preliminary check (not a loan decision)", keep=40)
         figures = assessment.get("figures") or {}
         period = assessment.get("period") or {}
-        rows([
+        pdf.details([
             ("Result", assessment.get("outcomeLabel")),
-            ("Summary", assessment.get("summary")),
             ("Period assessed", f"{period.get('months')} months, {period.get('from')} to {period.get('to')}"),
-            ("Documented income", ghs(figures.get("income", "0.00"))),
-            ("Documented expenses", ghs(figures.get("expenses", "0.00"))),
-            ("Net cash flow", ghs(figures.get("net", "0.00"))),
-            ("Verified share", f"{figures.get('verifiedShare')}% of income and costs"
-             if figures.get("verifiedShare") is not None else "No income or costs recorded"),
         ])
+        if assessment.get("summary"):
+            pdf.note(assessment["summary"], italic=False)
+        style = pdf.table_style(col_widths=(90, 50), text_align=("LEFT", "RIGHT"))
+        with pdf.table(**style) as table:
+            table.row(["Documented in AgriCtec", "Amount (GHS)"])
+            table.row(["Income", ghs(figures.get("income", "0.00"), prefix=False)])
+            table.row(["Expenses", ghs(figures.get("expenses", "0.00"), prefix=False)])
+            table.row(["Net cash flow", ghs(figures.get("net", "0.00"), prefix=False)], style=TOTAL_ROW)
+        pdf.ln(1)
+        share = figures.get("verifiedShare")
+        pdf.note(f"{share}% of the income and costs are verified by AgriCtec review." if share is not None
+                 else "No income or costs were recorded in the period assessed.")
     if application.get("statementReference"):
-        pdf.set_font("Helvetica", "I", 8.5)
-        pdf.multi_cell(0, 4.5, clean(
-            f"The transaction statement (report {application['statementReference']}) is attached: it marks every "
-            "entry as verified by AgriCtec or self-reported."), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.note(f"The transaction statement (report {application['statementReference']}) is attached: it marks "
+                 "every entry as verified by AgriCtec or self-reported.")
 
     if consent:
-        heading("Consent to share")
-        rows([
+        pdf.section("Consent to share", keep=26)
+        pdf.details([
             ("Given on", consent["givenAt"]),
             ("Shared with", application["lenderName"]),
             ("Purpose", consent["purpose"]),
             ("Information shared", "; ".join(consent["dataItems"])),
         ])
+
+    pdf.disclaimer(FOOTER)
     return bytes(pdf.output())

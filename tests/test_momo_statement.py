@@ -47,7 +47,7 @@ def test_statement_is_momo_only_private_exact_and_filtered():
     filtered = owner.get(f"{API}/me/momo/statement", params={"network": "Telecel", "direction": "out", "query": "GHS 0.20"})
     text = pdf_text(filtered.content)
     assert "OwnSupplier" in text and "OwnBuyer" not in text
-    assert "1 transactions" in text
+    assert "1 transaction |" in text
     empty = owner.get(f"{API}/me/momo/statement", params={"status": "verified"})
     assert "No recorded MoMo transactions match" in pdf_text(empty.content)
     assert owner.get(f"{API}/me/momo/statement", params={"network": "Invented"}).status_code == 422

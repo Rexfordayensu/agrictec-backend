@@ -30,6 +30,7 @@ from app.core.audit import append_audit
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.domain.application_pack import render as render_pack
 from app.domain.clock import iso, now_utc, today
+from app.domain.financial_report import reference_for
 from app.domain.loan_assessment import analyse, entries_from
 from app.integrations import messaging
 from app.integrations.storage import store
@@ -739,7 +740,7 @@ def pack_pdf(db: DB, app: FarmerLoanApplication) -> bytes:
         "reference": app.reference, "lenderName": lender.name if lender else "", "productSnapshot": app.product_snapshot,
         "productVersion": app.product_version, "amount": f"{app.amount:.2f}", "months": app.months,
         "purpose": app.purpose, "letter": app.letter, "answerRows": answers, "assessment": app.assessment_snapshot,
-        "statementReference": report.id[:8].upper() if report else None,
+        "statementReference": reference_for(report.id, report.generated_at) if report else None,
         "identityLabel": {"none": "Not reviewed", "reviewed": "Reviewed by AgriCtec (not an NIA identity check)",
                           "nia_verified": "Verified with NIA"}[level],
     }

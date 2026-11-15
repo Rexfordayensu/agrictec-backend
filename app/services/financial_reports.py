@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session as DB
 from app.core.audit import append_audit
 from app.core.errors import NotFound
 from app.domain.clock import iso, now_utc, today
-from app.domain.financial_report import render
+from app.domain.financial_report import reference_for, render
 from app.domain.financial_summary import period_bounds
 from app.integrations import storage
 from app.models import Admin, FarmRecord, FinancialReportExport, MomoTransaction, new_id
@@ -42,15 +42,18 @@ def _entries(db: DB, user_id: str, months: int) -> list[dict]:
         kind = FARM_KINDS.get(r.type) or f"Financing {'in' if r.direction == 'in' else 'out'}"
         rows.append({"date": r.date.isoformat(), "kind": kind, "description": r.description,
                      "amount": f"{r.amount:.2f}", "status": r.verification_status, "source": r.source_type,
-                     "recorded": _recorded(r.created_at)})
+                     "recorded": _recorded(r.created_at), "created": r.created_at,
+                     "reference": r.external_reference, "network": r.network, "bank": r.bank_name})
     for t in db.scalars(select(MomoTransaction).where(
         MomoTransaction.user_id == user_id, MomoTransaction.date >= start, MomoTransaction.date <= end
     )):
-        rows.append({"date": t.date.isoformat(), "kind": f"MoMo {'in' if t.direction == 'in' else 'out'}",
+        rows.append({"date": t.date.isoformat(), "kind": f"MoMo {'received' if t.direction == 'in' else 'sent'}",
                      "description": t.counterparty, "amount": f"{t.amount:.2f}",
                      "status": t.verification_status, "source": t.source_type,
-                     "recorded": _recorded(t.created_at)})
-    return sorted(rows, key=lambda e: (e["date"], e["recorded"]), reverse=True)
+                     "recorded": _recorded(t.created_at), "created": t.created_at,
+                     "reference": t.reference, "network": t.network, "bank": None})
+    # Oldest first, like a statement: the PDF numbers them 1, 2, 3... in this order.
+    return sorted(rows, key=lambda e: (e["date"], e["created"] or now_utc()))
 
 
 def _recorded(at) -> str:
@@ -67,7 +70,7 @@ def create(db: DB, user_id: str, months: int) -> dict:
         summary=summary,
         profile=farm.get_profile(db, user_id).model_dump(),
         entries=_entries(db, user_id, months),
-        report_id=report_id[:8].upper(),
+        report_id=reference_for(report_id, generated_at),
         generated_at=generated_at,
     )
     key = f"reports/{user_id}/{report_id}.pdf"
@@ -125,7 +128,9 @@ def application_statement(db: DB, actor: Admin, user_id: str, report_id: str) ->
     it with the lender). The only way the console opens a farmer's report; each download is
     audited. Never used to browse a farmer's reports."""
     data, name = file(db, user_id, report_id)
+    row = db.get(FinancialReportExport, report_id)
+    printed = reference_for(report_id, row.generated_at) if row else report_id[:8].upper()
     append_audit(db, actor, action="farmer.report_download", target_type="farmer", target_id=user_id,
-                 summary=f"Downloaded the statement attached to a loan application ({report_id[:8].upper()})")
+                 summary=f"Downloaded the statement attached to a loan application ({printed})")
     db.commit()
     return data, name
