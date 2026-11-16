@@ -101,18 +101,51 @@ def purge_stale(db: DB, keep: timedelta = timedelta(days=1)) -> int:
     return count
 
 
+def _allow(db: DB, key: str, limit: int, window: timedelta) -> None:
+    """Counts one request against `key`; 429 once `limit` is passed within the window."""
+    if not get_settings().rate_limits_enabled:
+        return
+    if not hit(db, key, limit, window):
+        raise AppError(
+            "Too many requests. Please wait a moment and try again.",
+            code="rate_limited",
+            status_code=429,
+        )
+
+
 def rate_limit(name: str, limit: int, per_seconds: int) -> Callable[..., None]:
-    """A dependency: at most `limit` requests per `per_seconds` from one client address."""
+    """A dependency: at most `limit` requests per `per_seconds` from one client address. For
+    signed-out actions (sign-in, sign-up), where an address is all there is to count."""
     window = timedelta(seconds=per_seconds)
 
     def dependency(request: Request, db: DB = Depends(get_db)) -> None:
-        if not get_settings().rate_limits_enabled:
-            return
-        if not hit(db, f"{name}:{client_ip(request)}", limit, window):
-            raise AppError(
-                "Too many requests. Please wait a moment and try again.",
-                code="rate_limited",
-                status_code=429,
-            )
+        _allow(db, f"{name}:{client_ip(request)}", limit, window)
+
+    return dependency
+
+
+def farmer_rate_limit(name: str, limit: int, per_seconds: int) -> Callable[..., None]:
+    """A dependency: at most `limit` requests per `per_seconds` from one farmer account. Counted
+    per account, not per address: many phones on a Ghanaian mobile network share one public
+    address, and they must not use up each other's allowance."""
+    from app.core.deps import FarmerContext, farmer_context
+
+    window = timedelta(seconds=per_seconds)
+
+    def dependency(ctx: FarmerContext = Depends(farmer_context), db: DB = Depends(get_db)) -> None:
+        _allow(db, f"{name}:farmer:{ctx.user.id}", limit, window)
+
+    return dependency
+
+
+def admin_rate_limit(name: str, limit: int, per_seconds: int) -> Callable[..., None]:
+    """A dependency: at most `limit` requests per `per_seconds` from one admin account (a team
+    working from one office shares an address)."""
+    from app.core.deps import AdminContext, admin_context
+
+    window = timedelta(seconds=per_seconds)
+
+    def dependency(ctx: AdminContext = Depends(admin_context), db: DB = Depends(get_db)) -> None:
+        _allow(db, f"{name}:admin:{ctx.admin.id}", limit, window)
 
     return dependency

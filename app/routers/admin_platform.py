@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
 from app.core.deps import AdminContext, require
+from app.core.ratelimit import admin_rate_limit
 from app.db import get_db
 from app.domain.announcements import in_audience
 from app.domain.clock import today
@@ -118,7 +119,7 @@ class ResearchQuery(CamelModel):
     package_weight_kg: Annotated[float | None, Field(gt=0, le=100_000)] = None
 
 
-@router.post("/content/market/research", tags=["Admin content"])
+@router.post("/content/market/research", tags=["Admin content"], dependencies=[Depends(admin_rate_limit("admin-market-research", 30, 3600))])
 def research_market_prices(body: ResearchQuery, ctx: allowed("content.manage")):
     """Source-backed Ghanaian observations (MoFA wholesale prices via FAO, and WFP market
     monitoring) for one crop, unit and package size: the latest per market, never an average.
@@ -268,7 +269,12 @@ def audit_actors(ctx: allowed("audit.view"), db: Database):
     return audit_log.actors(db)
 
 
-@router.post("/audit/export", response_model=a.FileExport, tags=["Admin audit log"])
+@router.post(
+    "/audit/export",
+    response_model=a.FileExport,
+    tags=["Admin audit log"],
+    dependencies=[Depends(admin_rate_limit("admin-export", 30, 3600))],
+)
 def export_audit(body: a.AuditExport, ctx: allowed("audit.view"), db: Database):
     """Every matching entry, oldest first, as JSON or CSV. The export is itself logged."""
     return audit_log.export(db, ctx.admin, body.filter, body.format)
@@ -325,7 +331,7 @@ def build_report(report_id: str, ctx: allowed("reports.export"), db: Database):
     return insights.build(db, report_id)
 
 
-@router.post("/reports/{report_id}/export", tags=["Admin reports"])
+@router.post("/reports/{report_id}/export", tags=["Admin reports"], dependencies=[Depends(admin_rate_limit("admin-export", 30, 3600))])
 def export_report(
     report_id: str, ctx: allowed("reports.export"), db: Database, fmt: Annotated[Literal["csv", "pdf"], Query(alias="format")] = "csv"
 ):
@@ -349,7 +355,7 @@ def builder_preview(body: a.BuilderSpec, ctx: allowed("reports.export"), db: Dat
     return insights.preview(db, _without_contacts(body, ctx))
 
 
-@router.post("/reports/builder/export", tags=["Admin reports"])
+@router.post("/reports/builder/export", tags=["Admin reports"], dependencies=[Depends(admin_rate_limit("admin-export", 30, 3600))])
 def builder_export(body: a.BuilderSpec, ctx: allowed("reports.export"), db: Database):
     result = insights.export_custom(db, ctx.admin, _without_contacts(body, ctx))
     response = file_response(result["csv"], result["filename"])
@@ -368,20 +374,20 @@ def system_status(ctx: allowed("overview.view"), db: Database):
     return {"seededAt": platform_store.get_raw(db, platform_store.SEEDED) if demo else None, "demoData": demo}
 
 
-@router.post("/system/backup", tags=["Admin system"])
+@router.post("/system/backup", tags=["Admin system"], dependencies=[Depends(admin_rate_limit("admin-backup", 10, 3600))])
 def export_backup(body: a.BackupExport, ctx: allowed("data.manage"), db: Database):
     """Every table except sign-ins, the team and the audit trail, encrypted with the admin's
     passphrase (AES-256-GCM, scrypt). No password hashes."""
     return backup.export_all(db, ctx.admin, body.passphrase)
 
 
-@router.post("/system/backup/summary", tags=["Admin system"])
+@router.post("/system/backup/summary", tags=["Admin system"], dependencies=[Depends(admin_rate_limit("admin-backup", 10, 3600))])
 def summarize_backup(body: a.BackupFile, ctx: allowed("data.manage")):
     """What a backup file holds (decrypted with its passphrase), checked, before restoring it."""
     return backup.summarize(body.backup, body.passphrase)
 
 
-@router.post("/system/restore", tags=["Admin system"])
+@router.post("/system/restore", tags=["Admin system"], dependencies=[Depends(admin_rate_limit("admin-backup", 10, 3600))])
 def restore_backup(body: a.BackupImport, ctx: allowed("data.manage"), db: Database):
     """Replaces all platform and farmer data, all or nothing. Type RESTORE and your own password."""
     return backup.import_all(db, ctx.admin, body.backup, body.confirmation, body.password, body.passphrase)

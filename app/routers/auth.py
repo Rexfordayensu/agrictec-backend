@@ -42,7 +42,7 @@ def sign_up(body: SignUp, request: Request, response: Response, db: DB = Depends
     return _signed_in(db, request, response, token, session)
 
 
-@router.post("/login", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
+@router.post("/login", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 60, 900))])
 def sign_in(body: Credentials, request: Request, response: Response, db: DB = Depends(get_db)):
     """409 with code "password_change_required" after an admin reset: call
     /auth/replace-temporary-password with the temporary and the new password. Five wrong passwords
@@ -55,7 +55,7 @@ def sign_in(body: Credentials, request: Request, response: Response, db: DB = De
     return _signed_in(db, request, response, token, session)
 
 
-@router.post("/replace-temporary-password", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
+@router.post("/replace-temporary-password", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 60, 900))])
 def replace_temporary_password(
     body: ReplaceTemporaryPassword, request: Request, response: Response, db: DB = Depends(get_db)
 ):
@@ -73,7 +73,7 @@ def request_password_reset(body: PasswordResetRequest, db: DB = Depends(get_db))
     return Message(detail="If an account uses this email, a reset code is on its way. It expires in 15 minutes.")
 
 
-@router.post("/password-reset/confirm", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 20, 900))])
+@router.post("/password-reset/confirm", response_model=SignedIn, dependencies=[Depends(rate_limit("login", 60, 900))])
 def confirm_password_reset(body: PasswordResetConfirm, request: Request, response: Response, db: DB = Depends(get_db)):
     """The code and a new password: every other session ends, and this one starts."""
     token, session = password_reset.confirm_reset(db, body.email, body.code, body.new_password)

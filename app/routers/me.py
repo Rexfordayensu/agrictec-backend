@@ -9,7 +9,7 @@ from pydantic import Field
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import FarmerContext, farmer_context, private_farmer, writable_farmer
-from app.core.ratelimit import rate_limit
+from app.core.ratelimit import farmer_rate_limit, rate_limit
 from app.db import get_db
 from app.domain.diagnosis import MAX_IMAGE_BYTES
 from app.routers.common import clear_farmer_cookies, set_onboarded_hint
@@ -322,7 +322,7 @@ def loan_assessments(ctx: Private, db: Database):
     return loan_eligibility.latest(db, ctx.user.id)
 
 
-@router.post("/loans/eligibility", response_model=f.EligibilityResult)
+@router.post("/loans/eligibility", response_model=f.EligibilityResult, dependencies=[Depends(farmer_rate_limit("loan-eligibility", 60, 3600))])
 def check_eligibility(body: f.EligibilityQuery, ctx: Private, db: Database):
     return lending.eligibility(db, ctx.user.id, body)
 
@@ -332,7 +332,12 @@ def list_applications(ctx: Reader, db: Database):
     return lending.list_for_farmer(db, ctx.user.id)
 
 
-@router.post("/loans/applications", response_model=f.LoanApplication, status_code=201)
+@router.post(
+    "/loans/applications",
+    response_model=f.LoanApplication,
+    status_code=201,
+    dependencies=[Depends(farmer_rate_limit("loan-application", 20, 3600))],
+)
 def submit_application(body: f.LoanApplicationInput, ctx: Writer, db: Database):
     """Needs a verified Ghana Card and every eligibility rule; the rate, monthly payment and score
     are set here, not taken from the request."""
@@ -354,7 +359,12 @@ def send_phone_code(ctx: Writer, db: Database):
     return phone_verification.send_code(db, ctx.user.id)
 
 
-@router.post("/verifications", response_model=f.VerificationRequest, status_code=201)
+@router.post(
+    "/verifications",
+    response_model=f.VerificationRequest,
+    status_code=201,
+    dependencies=[Depends(farmer_rate_limit("verification-request", 10, 3600))],
+)
 def submit_verification(body: f.VerificationSubmit, ctx: Writer, db: Database):
     """A phone passes with the code texted to it (POST /me/phone/code); a farm location and a
     Ghana Card (full number) wait for an admin's review."""
@@ -433,14 +443,14 @@ def activate_plan(body: f.ActivatePlan, ctx: Writer, db: Database):
     return subscriptions.activate(db, ctx.user.id, body.plan_id, body.method)
 
 
-@router.post("/subscription/checkout", response_model=f.Checkout)
+@router.post("/subscription/checkout", response_model=f.Checkout, dependencies=[Depends(farmer_rate_limit("payment-checkout", 10, 3600))])
 def checkout(body: f.ActivatePlan, ctx: Writer, db: Database):
     """Starts a real payment (Paystack): send the farmer to `authorizationUrl`. Paystack brings
     them back to /settings/plans?reference=..., which then calls /subscription/confirm."""
     return subscriptions.checkout(db, ctx.user, body.plan_id, body.method)
 
 
-@router.post("/subscription/confirm", response_model=f.SubscriptionSnapshot)
+@router.post("/subscription/confirm", response_model=f.SubscriptionSnapshot, dependencies=[Depends(farmer_rate_limit("payment-confirm", 30, 3600))])
 def confirm_payment(body: f.ConfirmPayment, ctx: Writer, db: Database):
     """Checks the payment with Paystack; the plan is active once it is paid in full."""
     return subscriptions.confirm(db, body.reference, ctx.user.id)

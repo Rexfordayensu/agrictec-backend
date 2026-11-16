@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, admin_context
-from app.core.ratelimit import client_ip, rate_limit
+from app.core.ratelimit import admin_rate_limit, client_ip, rate_limit
 from app.core.sessions import token_in_body
 from app.db import get_db
 from app.routers.common import clear_admin_cookies, remember_device, set_admin_cookies
@@ -58,10 +58,26 @@ def sign_out(
     return Message(detail="Signed out.")
 
 
-@router.post("/change-password", response_model=a.AdminSession)
-def change_password(body: a.ChangePassword, ctx: Signed, db: Database):
-    """Also clears a forced change (mustChangePassword)."""
-    admin_auth.change_password(db, ctx.admin, body.current_password, body.new_password, keep_session=ctx.session.id)
+@router.post(
+    "/change-password",
+    response_model=a.AdminSession,
+    dependencies=[Depends(admin_rate_limit("admin-password-change", 10, 3600))],
+)
+def change_password(body: a.ChangePassword, request: Request, ctx: Signed, db: Database):
+    """Also clears a forced change (mustChangePassword). Wrong current passwords count toward the
+    sign-in lockout (423, with `until`)."""
+    known = login_lockout.is_known_device(
+        request.cookies.get(login_lockout.KNOWN_DEVICE_COOKIES["admin"]), ctx.admin.email, "admin"
+    )
+    admin_auth.change_password(
+        db,
+        ctx.admin,
+        body.current_password,
+        body.new_password,
+        keep_session=ctx.session.id,
+        client=client_ip(request),
+        known_device=known,
+    )
     return admin_auth.session_out(ctx.admin, ctx.session)
 
 

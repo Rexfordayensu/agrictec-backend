@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, admin_context, require
+from app.core.ratelimit import admin_rate_limit
 from app.db import get_db
 from app.domain.permissions import PERMISSION_LABELS, ROLE_LABELS, ROLE_PERMISSIONS
 from app.domain.risk_rules import RISK_RULES, THRESHOLDS
@@ -123,7 +124,7 @@ def lookup_farmers(body: a.IdList, ctx: allowed("farmers.view"), db: Database):
     return admin_farmers.lookup_farmers(db, body.ids or [])
 
 
-@router.post("/farmers/export", tags=["Admin farmers"])
+@router.post("/farmers/export", tags=["Admin farmers"], dependencies=[Depends(admin_rate_limit("admin-export", 30, 3600))])
 def export_farmers(body: a.IdList, ctx: allowed("reports.export"), db: Database):
     """CSV of the given farmers (or all). Never a password hash or Ghana Card digits."""
     return file_response(admin_farmers.export_csv(db, ctx.admin, body.ids), "AgriCtec_Farmers.csv")

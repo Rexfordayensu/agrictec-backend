@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 from sqlalchemy.orm import Session as DB
 
 from app.core.deps import AdminContext, require
+from app.core.ratelimit import admin_rate_limit
 from app.core.errors import AppError
 from app.db import get_db
 from app.routers.common import file_response
@@ -58,7 +59,7 @@ def list_applications(
     )
 
 
-@router.post("/loan-applications/export", tags=["Admin loans"])
+@router.post("/loan-applications/export", tags=["Admin loans"], dependencies=[Depends(admin_rate_limit("admin-export", 30, 3600))])
 def export_applications(body: a.IdList, ctx: allowed("reports.export"), db: Database):
     return file_response(lending.export_csv(db, ctx.admin, body.ids), "AgriCtec_Loan_Applications.csv")
 

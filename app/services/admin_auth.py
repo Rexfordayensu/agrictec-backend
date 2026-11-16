@@ -93,12 +93,32 @@ def touch(db: DB, record: AuthSession) -> datetime:
     return record.last_activity_at
 
 
-def change_password(db: DB, admin: Admin, current: str, new: str, *, keep_session: str | None = None) -> Admin:
+def change_password(
+    db: DB,
+    admin: Admin,
+    current: str,
+    new: str,
+    *,
+    keep_session: str | None = None,
+    client: str = "unknown",
+    known_device: bool = False,
+) -> Admin:
     """Also clears a forced change (must_change_password). Every other session of this admin
     ends (and any read-only farmer view they opened), so a stolen password stops working at once;
-    the session making the change (`keep_session`) stays signed in."""
+    the session making the change (`keep_session`) stays signed in.
+
+    A wrong current password counts as a failed sign-in (the same lockout, by email and address
+    and account-wide), so a stolen session can't be used to guess the password: five wrong in a
+    row lock it here and at sign-in (423, with `until`)."""
+    now = now_utc()
+    keys = login_lockout.check(db, admin.email, client, "admin", now, known_device=known_device)
     if not verify_password(current, admin.password_hash):
+        after = login_lockout.failed(db, keys, now)
+        db.commit()
+        if after.locked and after.until:
+            raise login_lockout.locked_error(after.until, now)
         raise AppError("Your current password is incorrect.")
+    login_lockout.succeeded(db, keys)
     problem = password_problem(new)
     if problem:
         raise AppError(problem)

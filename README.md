@@ -269,10 +269,19 @@ can see them for its redirects. To serve the API on another origin instead, set
 - **Plans and AI credits** are enforced on the server. Credits are held while a request runs, kept
   only on success, and released automatically if a request dies.
 - **CSV exports** neutralize spreadsheet formulas. Backups never contain password hashes.
-- **Rate limits** are counted per client IP in PostgreSQL, so they hold across workers:
-  - sign-up 10 per hour, farmer sign-in 20 per 15 minutes, guest 10 per hour
+- **Rate limits** are kept in PostgreSQL, so they hold across workers. Signed-out actions are
+  counted per client IP; the newer ones for signed-in people per account, because many phones on
+  a Ghanaian mobile network (and an admin team in one office) share a public address:
+  - sign-up 10 per hour, farmer sign-in 60 per 15 minutes per address (the lockout, per email and
+    address and account-wide, is what stops password guessing)
   - admin sign-in 30 per 15 minutes, on top of the lockout (five failures lock an email from that
     address for five minutes, so nobody else can lock a real admin out)
+  - admin password change 10 per hour per admin; a wrong current password counts toward the same
+    lockout, so a stolen session can't be used to guess the password
+  - per farmer account: payment checkout 10 and confirmation 30 per hour, verification requests
+    10 per hour, loan eligibility 60 and applications 20 per hour
+  - per admin account: exports and the report builder's export 30 per hour (together), market
+    price research 30 per hour, backup, backup summary and restore 10 per hour (together)
   - phone codes 5 per 10 minutes (and 5 per account a day)
   - assistant 30, crop doctor 10, weather 60 and place search 30 per minute
   `X-Forwarded-For` is believed only from `TRUSTED_PROXIES`, and it is read from the right. The
